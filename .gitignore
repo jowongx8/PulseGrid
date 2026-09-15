@@ -1,0 +1,19 @@
+# macOS
+.DS_Store
+
+# Environment files
+.env
+
+# Local agent instructions
+AGENTS.md
+
+# Go build outputs
+/backend/api
+/backend/bin/
+*.exe
+*.test
+*.out
+
+# Go coverage
+coverage.out
+coverage.html
