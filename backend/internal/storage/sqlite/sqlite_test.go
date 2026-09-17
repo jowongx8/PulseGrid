@@ -10,7 +10,7 @@ import (
 	"testing/fstest"
 )
 
-func TestOpenCreatesDatabaseAndAppliesBaselineOnce(t *testing.T) {
+func TestOpenCreatesDatabaseAndAppliesMigrationsOnce(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "nested", "pulse?grid#1.db")
 
@@ -28,6 +28,17 @@ func TestOpenCreatesDatabaseAndAppliesBaselineOnce(t *testing.T) {
 			t.Errorf("query migration version after attempt %d: %v", attempt, err)
 		} else if applied != 1 {
 			t.Errorf("applied version-1 records after attempt %d = %d, want 1", attempt, applied)
+		}
+		if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM goose_db_version WHERE version_id = 2 AND is_applied = 1").Scan(&applied); err != nil {
+			t.Errorf("query migration version 2 after attempt %d: %v", attempt, err)
+		} else if applied != 1 {
+			t.Errorf("applied version-2 records after attempt %d = %d, want 1", attempt, applied)
+		}
+		var latest int
+		if err := db.QueryRowContext(ctx, "SELECT MAX(version_id) FROM goose_db_version WHERE is_applied = 1").Scan(&latest); err != nil {
+			t.Errorf("query latest migration version after attempt %d: %v", attempt, err)
+		} else if latest != 2 {
+			t.Errorf("latest migration version after attempt %d = %d, want 2", attempt, latest)
 		}
 		if err := db.Close(); err != nil {
 			t.Fatalf("Close() attempt %d: %v", attempt, err)
