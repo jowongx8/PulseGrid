@@ -55,7 +55,8 @@ func run(ctx context.Context, logger *slog.Logger) (retErr error) {
 
 	services := service.Catalogue()
 	checker := monitoring.NewHTTPChecker()
-	runtime, err := app.NewMonitoringRuntime(services, checker, monitorInterval, monitorWorkers, monitorQueueCapacity)
+	writer := sqlite.NewCheckResultStore(db)
+	runtime, err := app.NewMonitoringRuntime(services, checker, writer, monitorInterval, monitorWorkers, monitorQueueCapacity)
 	if err != nil {
 		return fmt.Errorf("create monitoring runtime: %w", err)
 	}
