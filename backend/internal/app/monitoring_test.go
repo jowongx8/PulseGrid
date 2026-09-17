@@ -28,6 +28,26 @@ func (f submitterFunc) Submit(ctx context.Context, svc service.Service) error {
 	return f(ctx, svc)
 }
 
+type checkResultWriterFunc func(context.Context, monitoring.CheckResult) error
+
+func (f checkResultWriterFunc) Save(ctx context.Context, result monitoring.CheckResult) error {
+	return f(ctx, result)
+}
+
+func TestNewMonitoringRuntimeRequiresWriter(t *testing.T) {
+	_, err := NewMonitoringRuntime(
+		[]service.Service{{ID: "example", Enabled: true}},
+		checkerFunc(func(context.Context, service.Service) monitoring.CheckResult { return monitoring.CheckResult{} }),
+		nil,
+		time.Hour,
+		1,
+		1,
+	)
+	if err == nil || !strings.Contains(err.Error(), "writer is required") {
+		t.Fatalf("NewMonitoringRuntime() error = %v, want required writer error", err)
+	}
+}
+
 func TestNewMonitoringRuntimeUsesOneServiceSnapshot(t *testing.T) {
 	services := []service.Service{{ID: "original", Enabled: true}}
 	checked := make(chan string, 1)
@@ -80,7 +100,15 @@ func TestProcessResultsEvaluatesAndAppliesObservations(t *testing.T) {
 			tracker := newTestTracker(t)
 			guard := &outstandingSubmitter{outstanding: map[string]struct{}{"example": {}}}
 			ctx, cancel := context.WithCancel(context.Background())
-			cancel()
+			defer cancel()
+			saved := 0
+			writer := checkResultWriterFunc(func(context.Context, monitoring.CheckResult) error {
+				saved++
+				if saved == len(tt.codes) {
+					cancel()
+				}
+				return nil
+			})
 
 			results := make(chan monitoring.CheckResult, len(tt.codes))
 			for index, code := range tt.codes {
@@ -91,8 +119,11 @@ func TestProcessResultsEvaluatesAndAppliesObservations(t *testing.T) {
 				}
 			}
 			close(results)
-			if err := processResults(ctx, results, tracker, guard); err != nil {
+			if err := processResults(ctx, results, writer, tracker, guard); err != nil {
 				t.Fatalf("processResults() error = %v", err)
+			}
+			if saved != len(tt.codes) {
+				t.Fatalf("saved results = %d, want %d", saved, len(tt.codes))
 			}
 			if _, outstanding := guard.outstanding["example"]; outstanding {
 				t.Fatal("processed result left service outstanding")
@@ -119,19 +150,25 @@ func TestProcessResultsReleasesIgnoredAndStaleResults(t *testing.T) {
 	}
 
 	guard := &outstandingSubmitter{outstanding: make(map[string]struct{})}
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+	var saved []monitoring.CheckResult
 	for _, result := range []monitoring.CheckResult{
 		{ServiceID: "example", CheckedAt: base.Add(time.Second), ErrorKind: monitoring.ErrorCanceled},
 		{ServiceID: "example", CheckedAt: base.Add(-time.Second), StatusCode: 503},
 	} {
+		ctx, cancel := context.WithCancel(context.Background())
+		writer := checkResultWriterFunc(func(_ context.Context, result monitoring.CheckResult) error {
+			saved = append(saved, result)
+			cancel()
+			return nil
+		})
 		guard.outstanding["example"] = struct{}{}
 		results := make(chan monitoring.CheckResult, 1)
 		results <- result
 		close(results)
-		if err := processResults(ctx, results, tracker, guard); err != nil {
+		if err := processResults(ctx, results, writer, tracker, guard); err != nil {
 			t.Fatal(err)
 		}
+		cancel()
 		if _, outstanding := guard.outstanding["example"]; outstanding {
 			t.Fatal("no-op result left service outstanding")
 		}
@@ -142,6 +179,9 @@ func TestProcessResultsReleasesIgnoredAndStaleResults(t *testing.T) {
 	}
 	if snapshot.Status != status.StatusUp || !snapshot.LastObservedAt.Equal(base) {
 		t.Fatalf("snapshot after ignored and stale results = %+v", snapshot)
+	}
+	if len(saved) != 2 || saved[0].ErrorKind != monitoring.ErrorCanceled || saved[1].StatusCode != 503 {
+		t.Fatalf("saved no-op results = %+v, want canceled and stale raw checks", saved)
 	}
 }
 
@@ -250,12 +290,17 @@ func TestBlockedSubmissionDoesNotHoldOutstandingMutex(t *testing.T) {
 func TestMonitoringRuntimeCancellationJoinsActiveCheck(t *testing.T) {
 	started := make(chan struct{})
 	stopped := make(chan struct{})
+	var saved atomic.Int32
 	runtime := newTestRuntime(t, []service.Service{{ID: "example", Enabled: true}}, checkerFunc(func(ctx context.Context, svc service.Service) monitoring.CheckResult {
 		close(started)
 		<-ctx.Done()
 		close(stopped)
 		return monitoring.CheckResult{ServiceID: svc.ID, CheckedAt: time.Now().UTC(), ErrorKind: monitoring.ErrorCanceled}
 	}))
+	runtime.writer = checkResultWriterFunc(func(context.Context, monitoring.CheckResult) error {
+		saved.Add(1)
+		return nil
+	})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
@@ -265,6 +310,9 @@ func TestMonitoringRuntimeCancellationJoinsActiveCheck(t *testing.T) {
 	waitSignal(t, stopped)
 	if err := waitError(t, done); err != nil {
 		t.Fatalf("Run() after cancellation = %v, want nil", err)
+	}
+	if got := saved.Load(); got != 0 {
+		t.Fatalf("shutdown-canceled check saved %d times, want 0", got)
 	}
 	assertResultsClosed(t, runtime.pool.Results())
 }
@@ -299,10 +347,18 @@ func TestMonitoringRuntimeFailsOnTrackerError(t *testing.T) {
 	runtime := newTestRuntime(t, []service.Service{{ID: "example", Enabled: true}}, checkerFunc(func(context.Context, service.Service) monitoring.CheckResult {
 		return monitoring.CheckResult{ServiceID: "unknown", CheckedAt: time.Now().UTC(), StatusCode: 200}
 	}))
+	var saved atomic.Int32
+	runtime.writer = checkResultWriterFunc(func(context.Context, monitoring.CheckResult) error {
+		saved.Add(1)
+		return nil
+	})
 	done := make(chan error, 1)
 	go func() { done <- runtime.Run(context.Background()) }()
 	if err := waitError(t, done); !errors.Is(err, status.ErrUnknownService) {
 		t.Fatalf("Run() error = %v, want ErrUnknownService", err)
+	}
+	if got := saved.Load(); got != 1 {
+		t.Fatalf("Save calls before tracker failure = %d, want 1", got)
 	}
 	assertResultsClosed(t, runtime.pool.Results())
 }
@@ -326,14 +382,15 @@ func TestMonitoringRuntimeFailsIfWorkerPoolAlreadyStopped(t *testing.T) {
 func TestProcessResultsDetectsUnexpectedClosure(t *testing.T) {
 	tracker := newTestTracker(t)
 	guard := &outstandingSubmitter{outstanding: make(map[string]struct{})}
+	writer := checkResultWriterFunc(func(context.Context, monitoring.CheckResult) error { return nil })
 	results := make(chan monitoring.CheckResult)
 	close(results)
-	if err := processResults(context.Background(), results, tracker, guard); err == nil || !strings.Contains(err.Error(), "closed") {
+	if err := processResults(context.Background(), results, writer, tracker, guard); err == nil || !strings.Contains(err.Error(), "closed") {
 		t.Fatalf("active processResults() error = %v, want unexpected closure", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := processResults(ctx, results, tracker, guard); err != nil {
+	if err := processResults(ctx, results, writer, tracker, guard); err != nil {
 		t.Fatalf("canceled processResults() error = %v, want nil", err)
 	}
 }
@@ -364,7 +421,9 @@ func TestMonitoringRuntimeIsSingleUse(t *testing.T) {
 
 func newTestRuntime(t *testing.T, services []service.Service, checker monitoring.Checker) *MonitoringRuntime {
 	t.Helper()
-	runtime, err := NewMonitoringRuntime(services, checker, time.Hour, 1, 1)
+	runtime, err := NewMonitoringRuntime(services, checker, checkResultWriterFunc(func(context.Context, monitoring.CheckResult) error {
+		return nil
+	}), time.Hour, 1, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -402,12 +461,16 @@ func waitError(t *testing.T, done <-chan error) error {
 
 func assertResultsClosed(t *testing.T, results <-chan monitoring.CheckResult) {
 	t.Helper()
-	select {
-	case _, ok := <-results:
-		if ok {
-			t.Fatal("results channel still contained an unconsumed result")
+	timer := time.NewTimer(testTimeout)
+	defer timer.Stop()
+	for {
+		select {
+		case _, ok := <-results:
+			if !ok {
+				return
+			}
+		case <-timer.C:
+			t.Fatal("results channel was not closed")
 		}
-	case <-time.After(testTimeout):
-		t.Fatal("results channel was not closed")
 	}
 }

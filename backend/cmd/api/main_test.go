@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +17,20 @@ import (
 )
 
 const supervisorTestTimeout = 5 * time.Second
+
+func TestRunFailsBeforeStartingServicesWhenDatabaseInitializationFails(t *testing.T) {
+	t.Chdir(t.TempDir())
+	parent := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(parent, []byte("file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DATABASE_PATH", filepath.Join(parent, "pulsegrid.db"))
+
+	err := run(context.Background(), testLogger())
+	if err == nil || !strings.Contains(err.Error(), "database initialization failed") {
+		t.Fatalf("run() error = %v, want database startup error", err)
+	}
+}
 
 func TestRunApplicationStopsBothSubsystemsOnCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())

@@ -17,6 +17,7 @@ import (
 	"github.com/jowongx8/backend/internal/httpapi"
 	"github.com/jowongx8/backend/internal/monitoring"
 	"github.com/jowongx8/backend/internal/service"
+	"github.com/jowongx8/backend/internal/storage/sqlite"
 )
 
 const (
@@ -29,21 +30,33 @@ const (
 
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	if err := run(logger); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := run(ctx, logger); err != nil {
 		logger.Error("application failed", "error", err)
 		os.Exit(1)
 	}
 }
 
-func run(logger *slog.Logger) error {
+func run(ctx context.Context, logger *slog.Logger) (retErr error) {
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("configuration failed: %w", err)
 	}
+	db, err := sqlite.Open(ctx, cfg.DatabasePath)
+	if err != nil {
+		return fmt.Errorf("database initialization failed: %w", err)
+	}
+	defer func() {
+		if err := db.Close(); err != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("close SQLite database: %w", err))
+		}
+	}()
 
 	services := service.Catalogue()
 	checker := monitoring.NewHTTPChecker()
-	runtime, err := app.NewMonitoringRuntime(services, checker, monitorInterval, monitorWorkers, monitorQueueCapacity)
+	writer := sqlite.NewCheckResultStore(db)
+	runtime, err := app.NewMonitoringRuntime(services, checker, writer, monitorInterval, monitorWorkers, monitorQueueCapacity)
 	if err != nil {
 		return fmt.Errorf("create monitoring runtime: %w", err)
 	}
@@ -54,8 +67,6 @@ func run(logger *slog.Logger) error {
 		ReadHeaderTimeout: readHeaderTimeout,
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	return runApplication(ctx, server, runtime.Run, logger)
 }
 

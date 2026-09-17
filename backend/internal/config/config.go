@@ -9,10 +9,14 @@ import (
 	"github.com/joho/godotenv"
 )
 
-const defaultPort = 8080
+const (
+	defaultPort         = 8080
+	defaultDatabasePath = "./data/pulsegrid.db"
+)
 
 type Config struct {
-	Port int
+	Port         int
+	DatabasePath string
 }
 
 func Load() (Config, error) {
@@ -24,10 +28,26 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	databasePath, err := loadDatabasePath()
+	if err != nil {
+		return Config{}, err
+	}
 
 	return Config{
-		Port: port,
+		Port:         port,
+		DatabasePath: databasePath,
 	}, nil
+}
+
+func loadDatabasePath() (string, error) {
+	path, ok := os.LookupEnv("DATABASE_PATH")
+	if !ok {
+		return defaultDatabasePath, nil
+	}
+	if path == "" {
+		return "", errors.New("invalid DATABASE_PATH: must not be empty")
+	}
+	return path, nil
 }
 
 func loadPort() (int, error) {

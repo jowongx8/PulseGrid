@@ -4,6 +4,9 @@
 # Environment files
 .env
 
+# Default local SQLite database locations
+/backend/data/
+
 # Local agent instructions
 AGENTS.md
 

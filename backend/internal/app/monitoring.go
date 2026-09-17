@@ -15,11 +15,17 @@ import (
 
 var errRuntimeAlreadyRun = errors.New("monitoring runtime already ran")
 
-// MonitoringRuntime coordinates one in-memory monitoring pipeline.
+// CheckResultWriter persists raw monitoring results before they affect status.
+type CheckResultWriter interface {
+	Save(context.Context, monitoring.CheckResult) error
+}
+
+// MonitoringRuntime coordinates one monitoring pipeline.
 type MonitoringRuntime struct {
 	pool      *monitoring.WorkerPool
 	scheduler *monitoring.Scheduler
 	tracker   *status.Tracker
+	writer    CheckResultWriter
 	submitter *outstandingSubmitter
 	started   atomic.Bool
 }
@@ -33,10 +39,15 @@ type outstandingSubmitter struct {
 func NewMonitoringRuntime(
 	services []service.Service,
 	checker monitoring.Checker,
+	writer CheckResultWriter,
 	interval time.Duration,
 	workerCount int,
 	queueCapacity int,
 ) (*MonitoringRuntime, error) {
+	if writer == nil {
+		return nil, errors.New("check result writer is required")
+	}
+
 	snapshot := append([]service.Service(nil), services...)
 
 	tracker, err := status.NewTracker(snapshot)
@@ -62,6 +73,7 @@ func NewMonitoringRuntime(
 		pool:      pool,
 		scheduler: scheduler,
 		tracker:   tracker,
+		writer:    writer,
 		submitter: submitter,
 	}, nil
 }
@@ -85,7 +97,7 @@ func (r *MonitoringRuntime) Run(ctx context.Context) error {
 	}
 	exits := make(chan exit, 3)
 	go func() {
-		exits <- exit{component: "result consumer", err: processResults(runCtx, r.pool.Results(), r.tracker, r.submitter)}
+		exits <- exit{component: "result consumer", err: processResults(runCtx, r.pool.Results(), r.writer, r.tracker, r.submitter)}
 	}()
 	go func() {
 		r.pool.Run(runCtx)
@@ -145,18 +157,32 @@ func (s *outstandingSubmitter) complete(serviceID string) {
 func processResults(
 	ctx context.Context,
 	results <-chan monitoring.CheckResult,
+	writer CheckResultWriter,
 	tracker *status.Tracker,
 	submitter *outstandingSubmitter,
 ) error {
-	for result := range results {
-		observation := monitoring.Evaluate(result)
-		if _, err := tracker.Apply(observation); err != nil {
-			return fmt.Errorf("apply observation for service %q: %w", result.ServiceID, err)
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case result, ok := <-results:
+			if ctx.Err() != nil {
+				return nil
+			}
+			if !ok {
+				return errors.New("results channel closed while monitoring active")
+			}
+			if err := writer.Save(ctx, result); err != nil {
+				if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(err, ctxErr) {
+					return nil
+				}
+				return fmt.Errorf("save check result for service %q: %w", result.ServiceID, err)
+			}
+			observation := monitoring.Evaluate(result)
+			if _, err := tracker.Apply(observation); err != nil {
+				return fmt.Errorf("apply observation for service %q: %w", result.ServiceID, err)
+			}
+			submitter.complete(result.ServiceID)
 		}
-		submitter.complete(result.ServiceID)
 	}
-	if ctx.Err() == nil {
-		return errors.New("results channel closed while monitoring active")
-	}
-	return nil
 }
