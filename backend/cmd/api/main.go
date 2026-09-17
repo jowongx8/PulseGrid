@@ -8,25 +8,44 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
 
+	"github.com/jowongx8/backend/internal/app"
 	"github.com/jowongx8/backend/internal/config"
 	"github.com/jowongx8/backend/internal/httpapi"
+	"github.com/jowongx8/backend/internal/monitoring"
+	"github.com/jowongx8/backend/internal/service"
 )
 
 const (
-	readHeaderTimeout = 5 * time.Second
-	shutdownTimeout   = 5 * time.Second
+	readHeaderTimeout    = 5 * time.Second
+	shutdownTimeout      = 5 * time.Second
+	monitorInterval      = 15 * time.Second
+	monitorWorkers       = 4
+	monitorQueueCapacity = 4
 )
 
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	if err := run(logger); err != nil {
+		logger.Error("application failed", "error", err)
+		os.Exit(1)
+	}
+}
 
+func run(logger *slog.Logger) error {
 	cfg, err := config.Load()
 	if err != nil {
-		logger.Error("configuration failed", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("configuration failed: %w", err)
+	}
+
+	services := service.Catalogue()
+	checker := monitoring.NewHTTPChecker()
+	runtime, err := app.NewMonitoringRuntime(services, checker, monitorInterval, monitorWorkers, monitorQueueCapacity)
+	if err != nil {
+		return fmt.Errorf("create monitoring runtime: %w", err)
 	}
 
 	server := &http.Server{
@@ -35,44 +54,87 @@ func main() {
 		ReadHeaderTimeout: readHeaderTimeout,
 	}
 
-	serverErrors := make(chan error, 1)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return runApplication(ctx, server, runtime.Run, logger)
+}
+
+func runApplication(
+	ctx context.Context,
+	server *http.Server,
+	runMonitoring func(context.Context) error,
+	logger *slog.Logger,
+) error {
+	appCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	var shutdownStarted atomic.Bool
+	serverDone := make(chan error, 1)
+	monitoringDone := make(chan error, 1)
+
+	logger.Info("starting server", "addr", server.Addr)
 	go func() {
-		logger.Info("starting server", "addr", server.Addr)
-
-		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			serverErrors <- err
-			return
+		err := server.ListenAndServe()
+		switch {
+		case errors.Is(err, http.ErrServerClosed) && shutdownStarted.Load():
+			err = nil
+		case errors.Is(err, http.ErrServerClosed):
+			err = errors.New("HTTP server stopped before shutdown")
+		case err == nil:
+			err = errors.New("HTTP server stopped unexpectedly")
+		default:
+			err = fmt.Errorf("HTTP server: %w", err)
 		}
-
-		serverErrors <- nil
+		serverDone <- err
 	}()
 
-	shutdownSignal, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	select {
-	case err := <-serverErrors:
+	logger.Info("starting monitoring runtime")
+	go func() {
+		err := runMonitoring(appCtx)
 		if err != nil {
-			logger.Error("server failed", "error", err)
-			os.Exit(1)
+			err = fmt.Errorf("monitoring runtime: %w", err)
+		} else if appCtx.Err() == nil {
+			err = errors.New("monitoring runtime stopped unexpectedly")
 		}
-	case <-shutdownSignal.Done():
-		stop()
+		monitoringDone <- err
+	}()
+
+	var firstErr error
+	serverSeen, monitoringSeen := false, false
+	select {
+	case <-ctx.Done():
 		logger.Info("shutdown signal received")
-
-		shutdownContext, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-		defer cancel()
-
-		if err := server.Shutdown(shutdownContext); err != nil {
-			logger.Error("server shutdown failed", "error", err)
-			os.Exit(1)
-		}
-
-		if err := <-serverErrors; err != nil {
-			logger.Error("server failed during shutdown", "error", err)
-			os.Exit(1)
-		}
-
-		logger.Info("server shutdown complete")
+	case err := <-serverDone:
+		serverSeen = true
+		firstErr = err
+	case err := <-monitoringDone:
+		monitoringSeen = true
+		firstErr = err
 	}
+
+	logger.Info("application shutdown starting")
+	cancel()
+	shutdownStarted.Store(true)
+	shutdownCtx, stopShutdown := context.WithTimeout(context.Background(), shutdownTimeout)
+	shutdownErr := server.Shutdown(shutdownCtx)
+	stopShutdown()
+	if shutdownErr != nil {
+		shutdownErr = fmt.Errorf("HTTP server shutdown: %w", shutdownErr)
+		if closeErr := server.Close(); closeErr != nil {
+			shutdownErr = errors.Join(shutdownErr, fmt.Errorf("HTTP server close: %w", closeErr))
+		}
+	}
+
+	if !serverSeen {
+		firstErr = errors.Join(firstErr, <-serverDone)
+	}
+	if !monitoringSeen {
+		firstErr = errors.Join(firstErr, <-monitoringDone)
+	}
+	firstErr = errors.Join(firstErr, shutdownErr)
+	if firstErr != nil {
+		return firstErr
+	}
+	logger.Info("application shutdown complete")
+	return nil
 }
