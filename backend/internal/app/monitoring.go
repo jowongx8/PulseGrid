@@ -26,6 +26,7 @@ type MonitoringRuntime struct {
 	scheduler *monitoring.Scheduler
 	tracker   *status.Tracker
 	writer    CheckResultWriter
+	incidents *IncidentProcessor
 	submitter *outstandingSubmitter
 	started   atomic.Bool
 }
@@ -40,12 +41,16 @@ func NewMonitoringRuntime(
 	services []service.Service,
 	checker monitoring.Checker,
 	writer CheckResultWriter,
+	incidents *IncidentProcessor,
 	interval time.Duration,
 	workerCount int,
 	queueCapacity int,
 ) (*MonitoringRuntime, error) {
 	if writer == nil {
 		return nil, errors.New("check result writer is required")
+	}
+	if incidents == nil {
+		return nil, errors.New("incident processor is required")
 	}
 
 	snapshot := append([]service.Service(nil), services...)
@@ -74,6 +79,7 @@ func NewMonitoringRuntime(
 		scheduler: scheduler,
 		tracker:   tracker,
 		writer:    writer,
+		incidents: incidents,
 		submitter: submitter,
 	}, nil
 }
@@ -97,7 +103,7 @@ func (r *MonitoringRuntime) Run(ctx context.Context) error {
 	}
 	exits := make(chan exit, 3)
 	go func() {
-		exits <- exit{component: "result consumer", err: processResults(runCtx, r.pool.Results(), r.writer, r.tracker, r.submitter)}
+		exits <- exit{component: "result consumer", err: processResults(runCtx, r.pool.Results(), r.writer, r.tracker, r.incidents, r.submitter)}
 	}()
 	go func() {
 		r.pool.Run(runCtx)
@@ -159,6 +165,7 @@ func processResults(
 	results <-chan monitoring.CheckResult,
 	writer CheckResultWriter,
 	tracker *status.Tracker,
+	incidents *IncidentProcessor,
 	submitter *outstandingSubmitter,
 ) error {
 	for {
@@ -179,8 +186,15 @@ func processResults(
 				return fmt.Errorf("save check result for service %q: %w", result.ServiceID, err)
 			}
 			observation := monitoring.Evaluate(result)
-			if _, err := tracker.Apply(observation); err != nil {
+			update, err := tracker.Apply(observation)
+			if err != nil {
 				return fmt.Errorf("apply observation for service %q: %w", result.ServiceID, err)
+			}
+			if err := incidents.Process(ctx, update); err != nil {
+				if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(err, ctxErr) {
+					return nil
+				}
+				return fmt.Errorf("process incident update for service %q: %w", result.ServiceID, err)
 			}
 			submitter.complete(result.ServiceID)
 		}
