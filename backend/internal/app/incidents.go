@@ -8,6 +8,25 @@ import (
 	"github.com/jowongx8/backend/internal/status"
 )
 
+// IncidentReader loads unresolved incidents needed to initialize the lifecycle.
+type IncidentReader interface {
+	ListOpen(context.Context) ([]incident.Incident, error)
+}
+
+// RestoreOpenIncidents reconstructs lifecycle state before live monitoring starts.
+func RestoreOpenIncidents(ctx context.Context, lifecycle *incident.Lifecycle, reader IncidentReader) error {
+	values, err := reader.ListOpen(ctx)
+	if err != nil {
+		return fmt.Errorf("list open incidents: %w", err)
+	}
+	for _, value := range values {
+		if err := lifecycle.RestoreActive(value); err != nil {
+			return fmt.Errorf("restore open incident for service %q: %w", value.ServiceID, err)
+		}
+	}
+	return nil
+}
+
 // IncidentWriter persists incident openings and resolutions.
 type IncidentWriter interface {
 	Open(context.Context, incident.Incident) error

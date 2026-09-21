@@ -9,6 +9,7 @@ import (
 )
 
 var (
+	ErrInvalidIncident  = errors.New("incident: invalid incident")
 	ErrInvalidUpdate    = errors.New("incident: invalid status update")
 	ErrNoActiveIncident = errors.New("incident: no active incident")
 )
@@ -36,6 +37,25 @@ func (l *Lifecycle) Active(serviceID string) (Incident, bool) {
 		return Incident{}, false
 	}
 	return copyIncident(incident), true
+}
+
+// RestoreActive reconstructs an unresolved incident that predates this process.
+func (l *Lifecycle) RestoreActive(value Incident) error {
+	if value.ServiceID == "" {
+		return fmt.Errorf("%w: service ID is empty", ErrInvalidIncident)
+	}
+	if value.StartedAt.IsZero() {
+		return fmt.Errorf("%w: service %q has no start time", ErrInvalidIncident, value.ServiceID)
+	}
+	if value.ResolvedAt != nil {
+		return fmt.Errorf("%w: service %q is already resolved", ErrInvalidIncident, value.ServiceID)
+	}
+	if _, exists := l.active[value.ServiceID]; exists {
+		return fmt.Errorf("%w: service %q already has an active incident", ErrInvalidIncident, value.ServiceID)
+	}
+
+	l.active[value.ServiceID] = copyIncident(value)
+	return nil
 }
 
 // Apply opens or resolves an incident for a confirmed public status transition.

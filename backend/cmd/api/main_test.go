@@ -9,11 +9,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jowongx8/backend/internal/httpapi"
+	"github.com/jowongx8/backend/internal/storage/sqlite"
 )
 
 const supervisorTestTimeout = 5 * time.Second
@@ -29,6 +31,37 @@ func TestRunFailsBeforeStartingServicesWhenDatabaseInitializationFails(t *testin
 	err := run(context.Background(), testLogger())
 	if err == nil || !strings.Contains(err.Error(), "database initialization failed") {
 		t.Fatalf("run() error = %v, want database startup error", err)
+	}
+}
+
+func TestRunFailsBeforeStartingServicesWhenIncidentRestorationFails(t *testing.T) {
+	t.Chdir(t.TempDir())
+	databasePath := filepath.Join(t.TempDir(), "pulsegrid.db")
+	db, err := sqlite.Open(context.Background(), databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO incidents (service_id, started_at_ms, resolved_at_ms)
+		VALUES (?, ?, NULL)
+	`, "github", "not-a-timestamp"); err != nil {
+		t.Fatalf("insert malformed incident: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occupied.Close()
+	t.Setenv("DATABASE_PATH", databasePath)
+	t.Setenv("PORT", strconv.Itoa(occupied.Addr().(*net.TCPAddr).Port))
+
+	err = run(context.Background(), testLogger())
+	if err == nil || !strings.Contains(err.Error(), "restore open incidents") || !strings.Contains(err.Error(), "scan open incident") {
+		t.Fatalf("run() error = %v, want incident restoration failure", err)
 	}
 }
 

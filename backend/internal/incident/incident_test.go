@@ -275,6 +275,120 @@ func TestLifecycleReturnsIndependentSnapshots(t *testing.T) {
 	assertOpenIncident(t, &again, "github", incidentTestTime)
 }
 
+func TestLifecycleRestoresActiveIncident(t *testing.T) {
+	tests := []struct {
+		name      string
+		startedAt time.Time
+	}{
+		{name: "persisted time", startedAt: incidentTestTime},
+		{name: "Unix epoch", startedAt: time.Unix(0, 0)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lifecycle := NewLifecycle()
+			value := Incident{ServiceID: "github", StartedAt: tt.startedAt}
+			if err := lifecycle.RestoreActive(value); err != nil {
+				t.Fatalf("RestoreActive() error = %v", err)
+			}
+
+			active, ok := lifecycle.Active("github")
+			if !ok {
+				t.Fatal("restored incident is not active")
+			}
+			assertOpenIncident(t, &active, "github", tt.startedAt)
+		})
+	}
+}
+
+func TestLifecycleRejectsInvalidRestoration(t *testing.T) {
+	resolvedAt := incidentTestTime.Add(time.Minute)
+	tests := []struct {
+		name  string
+		value Incident
+	}{
+		{name: "empty service ID", value: Incident{StartedAt: incidentTestTime}},
+		{name: "zero start time", value: Incident{ServiceID: "github"}},
+		{name: "resolved incident", value: Incident{ServiceID: "github", StartedAt: incidentTestTime, ResolvedAt: &resolvedAt}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lifecycle := NewLifecycle()
+			if err := lifecycle.RestoreActive(tt.value); !errors.Is(err, ErrInvalidIncident) {
+				t.Fatalf("RestoreActive(%+v) error = %v, want ErrInvalidIncident", tt.value, err)
+			}
+			if len(lifecycle.active) != 0 {
+				t.Fatalf("active incident count = %d, want 0", len(lifecycle.active))
+			}
+		})
+	}
+}
+
+func TestLifecycleRejectsDuplicateRestorationWithoutOverwrite(t *testing.T) {
+	lifecycle := NewLifecycle()
+	first := Incident{ServiceID: "github", StartedAt: incidentTestTime}
+	if err := lifecycle.RestoreActive(first); err != nil {
+		t.Fatal(err)
+	}
+	second := Incident{ServiceID: "github", StartedAt: incidentTestTime.Add(time.Hour)}
+	if err := lifecycle.RestoreActive(second); !errors.Is(err, ErrInvalidIncident) {
+		t.Fatalf("second RestoreActive() error = %v, want ErrInvalidIncident", err)
+	}
+
+	active, ok := lifecycle.Active("github")
+	if !ok {
+		t.Fatal("original incident is no longer active")
+	}
+	assertOpenIncident(t, &active, "github", first.StartedAt)
+}
+
+func TestLifecycleRestoresServicesIndependently(t *testing.T) {
+	lifecycle := NewLifecycle()
+	values := []Incident{
+		{ServiceID: "github", StartedAt: incidentTestTime},
+		{ServiceID: "openai", StartedAt: incidentTestTime.Add(time.Second)},
+	}
+	for _, value := range values {
+		if err := lifecycle.RestoreActive(value); err != nil {
+			t.Fatalf("RestoreActive(%q) error = %v", value.ServiceID, err)
+		}
+	}
+	for _, value := range values {
+		active, ok := lifecycle.Active(value.ServiceID)
+		if !ok {
+			t.Fatalf("restored incident %q is not active", value.ServiceID)
+		}
+		assertOpenIncident(t, &active, value.ServiceID, value.StartedAt)
+	}
+}
+
+func TestLifecycleRestorationUsesIndependentSnapshots(t *testing.T) {
+	lifecycle := NewLifecycle()
+	value := Incident{ServiceID: "github", StartedAt: incidentTestTime}
+	if err := lifecycle.RestoreActive(value); err != nil {
+		t.Fatal(err)
+	}
+
+	value.ServiceID = "changed"
+	value.StartedAt = incidentTestTime.Add(time.Hour)
+	active, ok := lifecycle.Active("github")
+	if !ok {
+		t.Fatal("mutating restoration input changed active lookup")
+	}
+	assertOpenIncident(t, &active, "github", incidentTestTime)
+
+	active.ServiceID = "changed again"
+	active.StartedAt = incidentTestTime.Add(2 * time.Hour)
+	resolvedAt := incidentTestTime.Add(3 * time.Hour)
+	active.ResolvedAt = &resolvedAt
+	again, ok := lifecycle.Active("github")
+	if !ok {
+		t.Fatal("mutating Active result removed restored incident")
+	}
+	assertOpenIncident(t, &again, "github", incidentTestTime)
+}
+
 func transition(serviceID string, previous, current status.ServiceStatus, at time.Time) status.Update {
 	return status.Update{
 		ServiceID:  serviceID,

@@ -54,10 +54,16 @@ func run(ctx context.Context, logger *slog.Logger) (retErr error) {
 		}
 	}()
 
+	incidentStore := sqlite.NewIncidentStore(db)
+	incidentLifecycle := incident.NewLifecycle()
+	if err := app.RestoreOpenIncidents(ctx, incidentLifecycle, incidentStore); err != nil {
+		return fmt.Errorf("restore open incidents: %w", err)
+	}
+	incidentProcessor := app.NewIncidentProcessor(incidentLifecycle, incidentStore)
+
 	services := service.Catalogue()
 	checker := monitoring.NewHTTPChecker()
 	writer := sqlite.NewCheckResultStore(db)
-	incidentProcessor := app.NewIncidentProcessor(incident.NewLifecycle(), sqlite.NewIncidentStore(db))
 	runtime, err := app.NewMonitoringRuntime(services, checker, writer, incidentProcessor, monitorInterval, monitorWorkers, monitorQueueCapacity)
 	if err != nil {
 		return fmt.Errorf("create monitoring runtime: %w", err)

@@ -14,6 +14,109 @@ import (
 	"github.com/pressly/goose/v3"
 )
 
+func TestIncidentStoreListOpenReturnsEmptyResult(t *testing.T) {
+	values, err := NewIncidentStore(openIncidentTestDB(t)).ListOpen(context.Background())
+	if err != nil {
+		t.Fatalf("ListOpen() error = %v", err)
+	}
+	if values == nil || len(values) != 0 {
+		t.Fatalf("ListOpen() = %#v, want non-nil empty slice", values)
+	}
+}
+
+func TestIncidentStoreListOpenRestoresStoredMilliseconds(t *testing.T) {
+	db := openIncidentTestDB(t)
+	store := NewIncidentStore(db)
+	original := incident.Incident{
+		ServiceID: "github",
+		StartedAt: time.Unix(1_700_000_000, 123_456_789).In(time.FixedZone("AEST", 10*60*60)),
+	}
+	if err := store.Open(context.Background(), original); err != nil {
+		t.Fatal(err)
+	}
+
+	values, err := store.ListOpen(context.Background())
+	if err != nil {
+		t.Fatalf("ListOpen() error = %v", err)
+	}
+	if len(values) != 1 || values[0].ServiceID != original.ServiceID ||
+		!values[0].StartedAt.Equal(time.UnixMilli(original.StartedAt.UnixMilli())) || values[0].ResolvedAt != nil {
+		t.Fatalf("ListOpen() = %+v, want %q at stored millisecond %s", values, original.ServiceID, time.UnixMilli(original.StartedAt.UnixMilli()))
+	}
+}
+
+func TestIncidentStoreListOpenOrdersServicesAndExcludesResolvedHistory(t *testing.T) {
+	db := openIncidentTestDB(t)
+	store := NewIncidentStore(db)
+	resolved := incident.Incident{ServiceID: "cloudflare", StartedAt: time.UnixMilli(1000)}
+	if err := store.Open(context.Background(), resolved); err != nil {
+		t.Fatal(err)
+	}
+	resolvedAt := resolved.StartedAt.Add(time.Second)
+	resolved.ResolvedAt = &resolvedAt
+	if err := store.Resolve(context.Background(), resolved); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, value := range []incident.Incident{
+		{ServiceID: "openai", StartedAt: time.UnixMilli(3000)},
+		{ServiceID: "github", StartedAt: time.UnixMilli(2000)},
+	} {
+		if err := store.Open(context.Background(), value); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	values, err := store.ListOpen(context.Background())
+	if err != nil {
+		t.Fatalf("ListOpen() error = %v", err)
+	}
+	if len(values) != 2 || values[0].ServiceID != "github" || values[1].ServiceID != "openai" {
+		t.Fatalf("ListOpen() = %+v, want github then openai", values)
+	}
+	for _, value := range values {
+		if value.ResolvedAt != nil {
+			t.Fatalf("ListOpen() returned resolved incident %+v", value)
+		}
+	}
+}
+
+func TestIncidentStoreListOpenRespectsCanceledContext(t *testing.T) {
+	db := openIncidentTestDB(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := NewIncidentStore(db).ListOpen(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ListOpen() error = %v, want context.Canceled", err)
+	}
+}
+
+func TestIncidentStoreListOpenReportsQueryFailure(t *testing.T) {
+	db := openIncidentTestDB(t)
+	store := NewIncidentStore(db)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.ListOpen(context.Background()); err == nil || !strings.Contains(err.Error(), "query open incidents") {
+		t.Fatalf("ListOpen() error = %v, want contextual query failure", err)
+	}
+}
+
+func TestIncidentStoreListOpenReportsScanFailure(t *testing.T) {
+	db := openIncidentTestDB(t)
+	if _, err := db.Exec(`
+		INSERT INTO incidents (service_id, started_at_ms, resolved_at_ms)
+		VALUES (?, ?, NULL)
+	`, "github", "not-a-timestamp"); err != nil {
+		t.Fatalf("insert malformed incident: %v", err)
+	}
+
+	if _, err := NewIncidentStore(db).ListOpen(context.Background()); err == nil || !strings.Contains(err.Error(), "scan open incident") {
+		t.Fatalf("ListOpen() error = %v, want contextual scan failure", err)
+	}
+}
+
 func TestIncidentStoreOpenAndResolve(t *testing.T) {
 	db := openIncidentTestDB(t)
 	store := NewIncidentStore(db)

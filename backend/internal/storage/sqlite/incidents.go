@@ -5,17 +5,48 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jowongx8/backend/internal/incident"
 )
 
-// IncidentStore persists incident openings and resolutions.
+// IncidentStore persists and loads incidents.
 type IncidentStore struct {
 	db *sql.DB
 }
 
 func NewIncidentStore(db *sql.DB) *IncidentStore {
 	return &IncidentStore{db: db}
+}
+
+func (s *IncidentStore) ListOpen(ctx context.Context) ([]incident.Incident, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT service_id, started_at_ms
+		FROM incidents
+		WHERE resolved_at_ms IS NULL
+		ORDER BY service_id
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("query open incidents: %w", err)
+	}
+	defer rows.Close()
+
+	values := make([]incident.Incident, 0)
+	for rows.Next() {
+		var serviceID string
+		var startedAtMS int64
+		if err := rows.Scan(&serviceID, &startedAtMS); err != nil {
+			return nil, fmt.Errorf("scan open incident: %w", err)
+		}
+		values = append(values, incident.Incident{
+			ServiceID: serviceID,
+			StartedAt: time.UnixMilli(startedAtMS),
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate open incidents: %w", err)
+	}
+	return values, nil
 }
 
 func (s *IncidentStore) Open(ctx context.Context, value incident.Incident) error {
