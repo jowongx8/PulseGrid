@@ -9,7 +9,6 @@ import (
 
 	"github.com/jowongx8/backend/internal/incident"
 	"github.com/jowongx8/backend/internal/monitoring"
-	"github.com/jowongx8/backend/internal/service"
 	"github.com/jowongx8/backend/internal/status"
 	"github.com/jowongx8/backend/internal/storage/sqlite"
 )
@@ -92,7 +91,7 @@ func openRestartTestStore(t *testing.T) (*sql.DB, *sqlite.IncidentStore) {
 
 func newRestartTracker(t *testing.T) *status.Tracker {
 	t.Helper()
-	tracker, err := status.NewTracker([]service.Service{{ID: "github", Enabled: true}})
+	tracker, err := status.NewTracker([]string{"github"})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -31,6 +31,13 @@ type Update struct {
 	Applied    bool
 }
 
+type SnapshotEntry struct {
+	State         ServiceStatus
+	LastCheckedAt time.Time
+}
+
+type Snapshot map[string]SnapshotEntry
+
 type ServiceSnapshot struct {
 	ServiceID       string
 	Status          ServiceStatus
