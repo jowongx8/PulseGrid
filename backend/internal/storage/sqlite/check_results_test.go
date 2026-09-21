@@ -214,7 +214,7 @@ func TestCheckResultsDownMigrationPreservesBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := provider.Down(context.Background()); err != nil {
+	if _, err := provider.DownTo(context.Background(), 1); err != nil {
 		t.Fatal(err)
 	}
 

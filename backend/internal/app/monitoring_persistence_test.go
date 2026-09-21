@@ -55,7 +55,7 @@ func TestProcessResultsSavesBeforeTrackerAndReleasesOutstanding(t *testing.T) {
 	}()
 	go func() {
 		defer close(finished)
-		done <- processResults(context.Background(), results, writer, tracker, guard)
+		done <- processResults(context.Background(), results, writer, tracker, newTestIncidentProcessor(), guard)
 	}()
 	waitSignal(t, started)
 
@@ -121,7 +121,7 @@ func TestProcessResultsPersistsRawFailures(t *testing.T) {
 			results := make(chan monitoring.CheckResult, 1)
 			results <- tt.result
 			close(results)
-			if err := processResults(context.Background(), results, writer, tracker, guard); err == nil || !strings.Contains(err.Error(), "results channel closed") {
+			if err := processResults(context.Background(), results, writer, tracker, newTestIncidentProcessor(), guard); err == nil || !strings.Contains(err.Error(), "results channel closed") {
 				t.Fatalf("processResults() error = %v, want active-channel closure", err)
 			}
 			if len(saved) != 1 || saved[0] != tt.result {
@@ -159,7 +159,7 @@ func TestMonitoringRuntimeFailsOnPersistenceErrorAndJoinsChecks(t *testing.T) {
 	})
 	runtime, err := NewMonitoringRuntime(
 		[]service.Service{{ID: "primary", Enabled: true}, {ID: "sibling", Enabled: true}},
-		checker, writer, time.Hour, 2, 2,
+		checker, writer, newTestIncidentProcessor(), time.Hour, 2, 2,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -200,7 +200,7 @@ func TestProcessResultsTreatsContextSaveErrorAsFatalWhileActive(t *testing.T) {
 		}
 		return fmt.Errorf("writer: %w", context.Canceled)
 	})
-	err := processResults(context.Background(), results, writer, tracker, guard)
+	err := processResults(context.Background(), results, writer, tracker, newTestIncidentProcessor(), guard)
 	if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "save check result") {
 		t.Fatalf("processResults() error = %v, want wrapped fatal Save cancellation", err)
 	}
@@ -225,7 +225,7 @@ func TestProcessResultsDoesNotHideUnrelatedSaveErrorDuringShutdown(t *testing.T)
 	})
 	results := make(chan monitoring.CheckResult, 1)
 	results <- monitoring.CheckResult{ServiceID: "example", CheckedAt: time.Now().UTC(), StatusCode: 200}
-	if err := processResults(ctx, results, writer, tracker, guard); !errors.Is(err, wantErr) {
+	if err := processResults(ctx, results, writer, tracker, newTestIncidentProcessor(), guard); !errors.Is(err, wantErr) {
 		t.Fatalf("processResults() error = %v, want real Save error", err)
 	}
 	snapshot, err := tracker.Get("example")
@@ -249,7 +249,7 @@ func TestProcessResultsRejectsBufferedResultAfterCancellation(t *testing.T) {
 	results <- monitoring.CheckResult{ServiceID: "example", CheckedAt: time.Now().UTC(), StatusCode: 200}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := processResults(ctx, results, writer, tracker, guard); err != nil {
+	if err := processResults(ctx, results, writer, tracker, newTestIncidentProcessor(), guard); err != nil {
 		t.Fatalf("processResults() after cancellation = %v, want nil", err)
 	}
 	if got := saveCalls.Load(); got != 0 {
@@ -276,7 +276,7 @@ func TestMonitoringRuntimeStopsCleanlyWhenSaveMatchesCanceledContext(t *testing.
 		checkerFunc(func(context.Context, service.Service) monitoring.CheckResult {
 			return monitoring.CheckResult{ServiceID: "example", CheckedAt: time.Now().UTC(), StatusCode: 200}
 		}),
-		writer, time.Hour, 1, 1,
+		writer, newTestIncidentProcessor(), time.Hour, 1, 1,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -314,7 +314,7 @@ func TestMonitoringRuntimeFinishesAcceptedResultAfterCancellation(t *testing.T) 
 		checkerFunc(func(context.Context, service.Service) monitoring.CheckResult {
 			return monitoring.CheckResult{ServiceID: "example", CheckedAt: time.Now().UTC(), StatusCode: 200}
 		}),
-		writer, time.Hour, 1, 1,
+		writer, newTestIncidentProcessor(), time.Hour, 1, 1,
 	)
 	if err != nil {
 		t.Fatal(err)

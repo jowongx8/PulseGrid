@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jowongx8/backend/internal/incident"
 	"github.com/jowongx8/backend/internal/monitoring"
 	"github.com/jowongx8/backend/internal/service"
 	"github.com/jowongx8/backend/internal/status"
@@ -39,12 +40,28 @@ func TestNewMonitoringRuntimeRequiresWriter(t *testing.T) {
 		[]service.Service{{ID: "example", Enabled: true}},
 		checkerFunc(func(context.Context, service.Service) monitoring.CheckResult { return monitoring.CheckResult{} }),
 		nil,
+		newTestIncidentProcessor(),
 		time.Hour,
 		1,
 		1,
 	)
 	if err == nil || !strings.Contains(err.Error(), "writer is required") {
 		t.Fatalf("NewMonitoringRuntime() error = %v, want required writer error", err)
+	}
+}
+
+func TestNewMonitoringRuntimeRequiresIncidentProcessor(t *testing.T) {
+	_, err := NewMonitoringRuntime(
+		[]service.Service{{ID: "example", Enabled: true}},
+		checkerFunc(func(context.Context, service.Service) monitoring.CheckResult { return monitoring.CheckResult{} }),
+		checkResultWriterFunc(func(context.Context, monitoring.CheckResult) error { return nil }),
+		nil,
+		time.Hour,
+		1,
+		1,
+	)
+	if err == nil || !strings.Contains(err.Error(), "incident processor is required") {
+		t.Fatalf("NewMonitoringRuntime() error = %v, want required incident processor error", err)
 	}
 }
 
@@ -119,7 +136,7 @@ func TestProcessResultsEvaluatesAndAppliesObservations(t *testing.T) {
 				}
 			}
 			close(results)
-			if err := processResults(ctx, results, writer, tracker, guard); err != nil {
+			if err := processResults(ctx, results, writer, tracker, newTestIncidentProcessor(), guard); err != nil {
 				t.Fatalf("processResults() error = %v", err)
 			}
 			if saved != len(tt.codes) {
@@ -151,6 +168,11 @@ func TestProcessResultsReleasesIgnoredAndStaleResults(t *testing.T) {
 
 	guard := &outstandingSubmitter{outstanding: make(map[string]struct{})}
 	var saved []monitoring.CheckResult
+	incidentCalls := 0
+	processor := NewIncidentProcessor(incident.NewLifecycle(), incidentWriterFuncs{
+		open:    func(context.Context, incident.Incident) error { incidentCalls++; return nil },
+		resolve: func(context.Context, incident.Incident) error { incidentCalls++; return nil },
+	})
 	for _, result := range []monitoring.CheckResult{
 		{ServiceID: "example", CheckedAt: base.Add(time.Second), ErrorKind: monitoring.ErrorCanceled},
 		{ServiceID: "example", CheckedAt: base.Add(-time.Second), StatusCode: 503},
@@ -165,7 +187,7 @@ func TestProcessResultsReleasesIgnoredAndStaleResults(t *testing.T) {
 		results := make(chan monitoring.CheckResult, 1)
 		results <- result
 		close(results)
-		if err := processResults(ctx, results, writer, tracker, guard); err != nil {
+		if err := processResults(ctx, results, writer, tracker, processor, guard); err != nil {
 			t.Fatal(err)
 		}
 		cancel()
@@ -182,6 +204,9 @@ func TestProcessResultsReleasesIgnoredAndStaleResults(t *testing.T) {
 	}
 	if len(saved) != 2 || saved[0].ErrorKind != monitoring.ErrorCanceled || saved[1].StatusCode != 503 {
 		t.Fatalf("saved no-op results = %+v, want canceled and stale raw checks", saved)
+	}
+	if incidentCalls != 0 {
+		t.Fatalf("incident writer calls for ignored and stale results = %d, want 0", incidentCalls)
 	}
 }
 
@@ -385,12 +410,12 @@ func TestProcessResultsDetectsUnexpectedClosure(t *testing.T) {
 	writer := checkResultWriterFunc(func(context.Context, monitoring.CheckResult) error { return nil })
 	results := make(chan monitoring.CheckResult)
 	close(results)
-	if err := processResults(context.Background(), results, writer, tracker, guard); err == nil || !strings.Contains(err.Error(), "closed") {
+	if err := processResults(context.Background(), results, writer, tracker, newTestIncidentProcessor(), guard); err == nil || !strings.Contains(err.Error(), "closed") {
 		t.Fatalf("active processResults() error = %v, want unexpected closure", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := processResults(ctx, results, writer, tracker, guard); err != nil {
+	if err := processResults(ctx, results, writer, tracker, newTestIncidentProcessor(), guard); err != nil {
 		t.Fatalf("canceled processResults() error = %v, want nil", err)
 	}
 }
@@ -423,7 +448,7 @@ func newTestRuntime(t *testing.T, services []service.Service, checker monitoring
 	t.Helper()
 	runtime, err := NewMonitoringRuntime(services, checker, checkResultWriterFunc(func(context.Context, monitoring.CheckResult) error {
 		return nil
-	}), time.Hour, 1, 1)
+	}), newTestIncidentProcessor(), time.Hour, 1, 1)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -15,6 +15,7 @@ import (
 	"github.com/jowongx8/backend/internal/app"
 	"github.com/jowongx8/backend/internal/config"
 	"github.com/jowongx8/backend/internal/httpapi"
+	"github.com/jowongx8/backend/internal/incident"
 	"github.com/jowongx8/backend/internal/monitoring"
 	"github.com/jowongx8/backend/internal/service"
 	"github.com/jowongx8/backend/internal/storage/sqlite"
@@ -53,10 +54,17 @@ func run(ctx context.Context, logger *slog.Logger) (retErr error) {
 		}
 	}()
 
+	incidentStore := sqlite.NewIncidentStore(db)
+	incidentLifecycle := incident.NewLifecycle()
+	if err := app.RestoreOpenIncidents(ctx, incidentLifecycle, incidentStore); err != nil {
+		return fmt.Errorf("restore open incidents: %w", err)
+	}
+	incidentProcessor := app.NewIncidentProcessor(incidentLifecycle, incidentStore)
+
 	services := service.Catalogue()
 	checker := monitoring.NewHTTPChecker()
 	writer := sqlite.NewCheckResultStore(db)
-	runtime, err := app.NewMonitoringRuntime(services, checker, writer, monitorInterval, monitorWorkers, monitorQueueCapacity)
+	runtime, err := app.NewMonitoringRuntime(services, checker, writer, incidentProcessor, monitorInterval, monitorWorkers, monitorQueueCapacity)
 	if err != nil {
 		return fmt.Errorf("create monitoring runtime: %w", err)
 	}
