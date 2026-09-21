@@ -101,7 +101,7 @@ func TestRunApplicationCancelsMonitoringOnHTTPFailure(t *testing.T) {
 	defer occupied.Close()
 
 	monitoringStopped := make(chan struct{})
-	server := &http.Server{Addr: occupied.Addr().String(), Handler: httpapi.NewRouter(emptyCurrentStatusReader{})}
+	server := &http.Server{Addr: occupied.Addr().String(), Handler: httpapi.NewRouter(emptyCurrentStatusReader{}, emptyIncidentsReader{})}
 	done := make(chan error, 1)
 	go func() {
 		done <- runApplication(context.Background(), server, func(ctx context.Context) error {
@@ -149,13 +149,19 @@ func TestRunApplicationRejectsUnexpectedMonitoringExit(t *testing.T) {
 }
 
 func testServer() *http.Server {
-	return &http.Server{Addr: "127.0.0.1:0", Handler: httpapi.NewRouter(emptyCurrentStatusReader{})}
+	return &http.Server{Addr: "127.0.0.1:0", Handler: httpapi.NewRouter(emptyCurrentStatusReader{}, emptyIncidentsReader{})}
 }
 
 type emptyCurrentStatusReader struct{}
 
 func (emptyCurrentStatusReader) Execute() []app.ServiceStatusView {
 	return []app.ServiceStatusView{}
+}
+
+type emptyIncidentsReader struct{}
+
+func (emptyIncidentsReader) Execute(context.Context) (app.IncidentsView, error) {
+	return app.IncidentsView{Active: []app.IncidentView{}, Resolved: []app.IncidentView{}}, nil
 }
 
 func testLogger() *slog.Logger {

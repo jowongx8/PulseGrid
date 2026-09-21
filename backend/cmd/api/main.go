@@ -72,10 +72,14 @@ func run(ctx context.Context, logger *slog.Logger) (retErr error) {
 	if err != nil {
 		return fmt.Errorf("create current status query: %w", err)
 	}
+	incidentsQuery, err := app.NewIncidentsQuery(incidentStore)
+	if err != nil {
+		return fmt.Errorf("create incidents query: %w", err)
+	}
 
 	server := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.Port),
-		Handler:           httpapi.NewRouter(currentStatusQuery),
+		Handler:           httpapi.NewRouter(currentStatusQuery, incidentsQuery),
 		ReadHeaderTimeout: readHeaderTimeout,
 	}
 

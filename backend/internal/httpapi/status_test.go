@@ -61,7 +61,7 @@ func TestCurrentStatusReturnsPublicStatusSnapshot(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/status", nil)
 	response := httptest.NewRecorder()
 
-	NewRouter(reader).ServeHTTP(response, request)
+	NewRouter(reader, &fakeIncidentsReader{}).ServeHTTP(response, request)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
@@ -127,7 +127,7 @@ func TestCurrentStatusReturnsEmptyArray(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/status", nil)
 	response := httptest.NewRecorder()
 
-	NewRouter(reader).ServeHTTP(response, request)
+	NewRouter(reader, &fakeIncidentsReader{}).ServeHTTP(response, request)
 
 	if got := response.Body.String(); got != `{"services":[]}` {
 		t.Fatalf("response body = %q, want nonnull empty services array", got)
@@ -142,7 +142,7 @@ func TestCurrentStatusRejectsPostWithoutInvokingReader(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/status", nil)
 	response := httptest.NewRecorder()
 
-	NewRouter(reader).ServeHTTP(response, request)
+	NewRouter(reader, &fakeIncidentsReader{}).ServeHTTP(response, request)
 
 	if response.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusMethodNotAllowed)
