@@ -14,6 +14,7 @@ import (
 
 	"github.com/jowongx8/backend/internal/app"
 	"github.com/jowongx8/backend/internal/config"
+	"github.com/jowongx8/backend/internal/event"
 	"github.com/jowongx8/backend/internal/httpapi"
 	"github.com/jowongx8/backend/internal/incident"
 	"github.com/jowongx8/backend/internal/monitoring"
@@ -60,11 +61,16 @@ func run(ctx context.Context, logger *slog.Logger) (retErr error) {
 		return fmt.Errorf("restore open incidents: %w", err)
 	}
 	incidentProcessor := app.NewIncidentProcessor(incidentLifecycle, incidentStore)
+	eventBroker, err := event.NewBroker(event.DefaultSubscriberBufferSize)
+	if err != nil {
+		return fmt.Errorf("create event broker: %w", err)
+	}
+	defer eventBroker.Close()
 
 	services := service.Catalogue()
 	checker := monitoring.NewHTTPChecker()
 	writer := sqlite.NewCheckResultStore(db)
-	runtime, err := app.NewMonitoringRuntime(services, checker, writer, incidentProcessor, monitorInterval, monitorWorkers, monitorQueueCapacity)
+	runtime, err := app.NewMonitoringRuntime(services, checker, writer, incidentProcessor, eventBroker, monitorInterval, monitorWorkers, monitorQueueCapacity)
 	if err != nil {
 		return fmt.Errorf("create monitoring runtime: %w", err)
 	}

@@ -110,7 +110,7 @@ func applyRestartResult(
 	if err != nil {
 		t.Fatalf("Tracker.Apply() error = %v", err)
 	}
-	if err := processor.Process(ctx, update); err != nil {
+	if _, err := processor.Process(ctx, update); err != nil {
 		t.Fatalf("IncidentProcessor.Process() error = %v", err)
 	}
 }

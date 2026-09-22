@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jowongx8/backend/internal/app"
+	"github.com/jowongx8/backend/internal/event"
 	"github.com/jowongx8/backend/internal/httpapi"
 	"github.com/jowongx8/backend/internal/storage/sqlite"
 )
@@ -118,7 +120,7 @@ func TestRunApplicationCancelsMonitoringOnHTTPFailure(t *testing.T) {
 }
 
 func TestRunApplicationStopsHTTPOnMonitoringFailure(t *testing.T) {
-	wantErr := errors.New("monitoring failed")
+	wantErr := fmt.Errorf("publish status changed: %w", event.ErrClosed)
 	httpShutdown := make(chan struct{})
 	server := testServer()
 	server.RegisterOnShutdown(func() { close(httpShutdown) })
@@ -130,8 +132,8 @@ func TestRunApplicationStopsHTTPOnMonitoringFailure(t *testing.T) {
 		}, testLogger())
 	}()
 
-	if err := waitForError(t, done); !errors.Is(err, wantErr) {
-		t.Fatalf("runApplication() error = %v, want monitoring failure", err)
+	if err := waitForError(t, done); !errors.Is(err, wantErr) || !errors.Is(err, event.ErrClosed) {
+		t.Fatalf("runApplication() error = %v, want publication failure", err)
 	}
 	waitForSignal(t, httpShutdown)
 }

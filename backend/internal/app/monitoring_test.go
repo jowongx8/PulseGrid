@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jowongx8/backend/internal/event"
 	"github.com/jowongx8/backend/internal/incident"
 	"github.com/jowongx8/backend/internal/monitoring"
 	"github.com/jowongx8/backend/internal/service"
@@ -35,12 +36,23 @@ func (f checkResultWriterFunc) Save(ctx context.Context, result monitoring.Check
 	return f(ctx, result)
 }
 
+type eventPublisherFunc func(event.Event) error
+
+func (f eventPublisherFunc) Publish(value event.Event) error {
+	return f(value)
+}
+
+func successfulEventPublisher() EventPublisher {
+	return eventPublisherFunc(func(event.Event) error { return nil })
+}
+
 func TestNewMonitoringRuntimeRequiresWriter(t *testing.T) {
 	_, err := NewMonitoringRuntime(
 		[]service.Service{{ID: "example", Enabled: true}},
 		checkerFunc(func(context.Context, service.Service) monitoring.CheckResult { return monitoring.CheckResult{} }),
 		nil,
 		newTestIncidentProcessor(),
+		successfulEventPublisher(),
 		time.Hour,
 		1,
 		1,
@@ -56,12 +68,29 @@ func TestNewMonitoringRuntimeRequiresIncidentProcessor(t *testing.T) {
 		checkerFunc(func(context.Context, service.Service) monitoring.CheckResult { return monitoring.CheckResult{} }),
 		checkResultWriterFunc(func(context.Context, monitoring.CheckResult) error { return nil }),
 		nil,
+		successfulEventPublisher(),
 		time.Hour,
 		1,
 		1,
 	)
 	if err == nil || !strings.Contains(err.Error(), "incident processor is required") {
 		t.Fatalf("NewMonitoringRuntime() error = %v, want required incident processor error", err)
+	}
+}
+
+func TestNewMonitoringRuntimeRequiresEventPublisher(t *testing.T) {
+	_, err := NewMonitoringRuntime(
+		[]service.Service{{ID: "example", Enabled: true}},
+		checkerFunc(func(context.Context, service.Service) monitoring.CheckResult { return monitoring.CheckResult{} }),
+		checkResultWriterFunc(func(context.Context, monitoring.CheckResult) error { return nil }),
+		newTestIncidentProcessor(),
+		nil,
+		time.Hour,
+		1,
+		1,
+	)
+	if err == nil || !strings.Contains(err.Error(), "event publisher is required") {
+		t.Fatalf("NewMonitoringRuntime() error = %v, want required event publisher error", err)
 	}
 }
 
@@ -143,7 +172,7 @@ func TestProcessResultsEvaluatesAndAppliesObservations(t *testing.T) {
 				}
 			}
 			close(results)
-			if err := processResults(ctx, results, writer, tracker, newTestIncidentProcessor(), guard); err != nil {
+			if err := processResults(ctx, results, writer, tracker, newTestIncidentProcessor(), successfulEventPublisher(), guard); err != nil {
 				t.Fatalf("processResults() error = %v", err)
 			}
 			if saved != len(tt.codes) {
@@ -194,7 +223,7 @@ func TestProcessResultsReleasesIgnoredAndStaleResults(t *testing.T) {
 		results := make(chan monitoring.CheckResult, 1)
 		results <- result
 		close(results)
-		if err := processResults(ctx, results, writer, tracker, processor, guard); err != nil {
+		if err := processResults(ctx, results, writer, tracker, processor, successfulEventPublisher(), guard); err != nil {
 			t.Fatal(err)
 		}
 		cancel()
@@ -417,12 +446,12 @@ func TestProcessResultsDetectsUnexpectedClosure(t *testing.T) {
 	writer := checkResultWriterFunc(func(context.Context, monitoring.CheckResult) error { return nil })
 	results := make(chan monitoring.CheckResult)
 	close(results)
-	if err := processResults(context.Background(), results, writer, tracker, newTestIncidentProcessor(), guard); err == nil || !strings.Contains(err.Error(), "closed") {
+	if err := processResults(context.Background(), results, writer, tracker, newTestIncidentProcessor(), successfulEventPublisher(), guard); err == nil || !strings.Contains(err.Error(), "closed") {
 		t.Fatalf("active processResults() error = %v, want unexpected closure", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := processResults(ctx, results, writer, tracker, newTestIncidentProcessor(), guard); err != nil {
+	if err := processResults(ctx, results, writer, tracker, newTestIncidentProcessor(), successfulEventPublisher(), guard); err != nil {
 		t.Fatalf("canceled processResults() error = %v, want nil", err)
 	}
 }
@@ -455,7 +484,7 @@ func newTestRuntime(t *testing.T, services []service.Service, checker monitoring
 	t.Helper()
 	runtime, err := NewMonitoringRuntime(services, checker, checkResultWriterFunc(func(context.Context, monitoring.CheckResult) error {
 		return nil
-	}), newTestIncidentProcessor(), time.Hour, 1, 1)
+	}), newTestIncidentProcessor(), successfulEventPublisher(), time.Hour, 1, 1)
 	if err != nil {
 		t.Fatal(err)
 	}

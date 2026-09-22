@@ -176,26 +176,43 @@ func TestIncidentProcessorRoutesAuthoritativeUpdates(t *testing.T) {
 		{Applied: true, Changed: false, ServiceID: "example"},
 		testIncidentUpdate(status.StatusUnknown, status.StatusUp, start.Add(-time.Second)),
 	} {
-		if err := processor.Process(ctx, update); err != nil {
+		transition, err := processor.Process(ctx, update)
+		if err != nil {
 			t.Fatal(err)
+		}
+		if transition != nil {
+			t.Fatalf("Process(%+v) transition = %+v, want nil", update, transition)
 		}
 	}
 	if len(opened) != 0 || len(resolved) != 0 {
 		t.Fatalf("writer called for no-action updates: opens %v, resolutions %v", opened, resolved)
 	}
 
-	if err := processor.Process(ctx, testIncidentUpdate(status.StatusUp, status.StatusDown, start)); err != nil {
+	openedTransition, err := processor.Process(ctx, testIncidentUpdate(status.StatusUp, status.StatusDown, start))
+	if err != nil {
 		t.Fatal(err)
+	}
+	if openedTransition == nil || openedTransition.ServiceID != "example" || !openedTransition.StartedAt.Equal(start) || openedTransition.ResolvedAt != nil {
+		t.Fatalf("opening transition = %+v", openedTransition)
 	}
 	if len(opened) != 1 || opened[0].ServiceID != "example" || !opened[0].StartedAt.Equal(start) || opened[0].ResolvedAt != nil || len(resolved) != 0 {
 		t.Fatalf("writer calls after opening = opens %v, resolutions %v", opened, resolved)
 	}
-	if err := processor.Process(ctx, testIncidentUpdate(status.StatusDown, status.StatusUp, end)); err != nil {
+	resolvedTransition, err := processor.Process(ctx, testIncidentUpdate(status.StatusDown, status.StatusUp, end))
+	if err != nil {
 		t.Fatal(err)
+	}
+	if resolvedTransition == nil || resolvedTransition.ServiceID != "example" || !resolvedTransition.StartedAt.Equal(start) ||
+		resolvedTransition.ResolvedAt == nil || !resolvedTransition.ResolvedAt.Equal(end) {
+		t.Fatalf("resolution transition = %+v", resolvedTransition)
 	}
 	if len(opened) != 1 || len(resolved) != 1 || resolved[0].ServiceID != "example" ||
 		!resolved[0].StartedAt.Equal(start) || resolved[0].ResolvedAt == nil || !resolved[0].ResolvedAt.Equal(end) {
 		t.Fatalf("writer calls after resolution = opens %v, resolutions %v", opened, resolved)
+	}
+	*resolvedTransition.ResolvedAt = end.Add(time.Hour)
+	if !resolved[0].ResolvedAt.Equal(end) {
+		t.Fatalf("mutating returned resolution changed writer value to %s", resolved[0].ResolvedAt)
 	}
 }
 
@@ -206,9 +223,9 @@ func TestIncidentProcessorPreservesLifecycleError(t *testing.T) {
 		resolve: func(context.Context, incident.Incident) error { called = true; return nil },
 	}
 	processor := NewIncidentProcessor(incident.NewLifecycle(), writer)
-	err := processor.Process(context.Background(), testIncidentUpdate(status.StatusDown, status.StatusUp, time.Date(2026, 9, 18, 10, 0, 0, 0, time.UTC)))
-	if !errors.Is(err, incident.ErrNoActiveIncident) || called {
-		t.Fatalf("Process() = %v, writer called %t; want lifecycle error without write", err, called)
+	transition, err := processor.Process(context.Background(), testIncidentUpdate(status.StatusDown, status.StatusUp, time.Date(2026, 9, 18, 10, 0, 0, 0, time.UTC)))
+	if transition != nil || !errors.Is(err, incident.ErrNoActiveIncident) || called {
+		t.Fatalf("Process() = (%+v, %v), writer called %t; want nil lifecycle error without write", transition, err, called)
 	}
 }
 
@@ -219,9 +236,9 @@ func TestIncidentProcessorDoesNotRollbackFailedOpen(t *testing.T) {
 		open: func(context.Context, incident.Incident) error { return fmt.Errorf("writer: %w", wantErr) },
 	})
 	start := time.Date(2026, 9, 18, 10, 0, 0, 0, time.UTC)
-	err := processor.Process(context.Background(), testIncidentUpdate(status.StatusUp, status.StatusDown, start))
-	if !errors.Is(err, wantErr) {
-		t.Fatalf("Process() error = %v, want Open failure", err)
+	transition, err := processor.Process(context.Background(), testIncidentUpdate(status.StatusUp, status.StatusDown, start))
+	if transition != nil || !errors.Is(err, wantErr) {
+		t.Fatalf("Process() = (%+v, %v), want nil Open failure", transition, err)
 	}
 	active, ok := lifecycle.Active("example")
 	if !ok || !active.StartedAt.Equal(start) || active.ResolvedAt != nil {
@@ -236,12 +253,12 @@ func TestIncidentProcessorDoesNotRollbackFailedResolve(t *testing.T) {
 		resolve: func(context.Context, incident.Incident) error { return fmt.Errorf("writer: %w", wantErr) },
 	})
 	start := time.Date(2026, 9, 18, 10, 0, 0, 0, time.UTC)
-	if err := processor.Process(context.Background(), testIncidentUpdate(status.StatusUp, status.StatusDown, start)); err != nil {
+	if _, err := processor.Process(context.Background(), testIncidentUpdate(status.StatusUp, status.StatusDown, start)); err != nil {
 		t.Fatal(err)
 	}
-	err := processor.Process(context.Background(), testIncidentUpdate(status.StatusDown, status.StatusUp, start.Add(time.Minute)))
-	if !errors.Is(err, wantErr) {
-		t.Fatalf("Process() error = %v, want Resolve failure", err)
+	transition, err := processor.Process(context.Background(), testIncidentUpdate(status.StatusDown, status.StatusUp, start.Add(time.Minute)))
+	if transition != nil || !errors.Is(err, wantErr) {
+		t.Fatalf("Process() = (%+v, %v), want nil Resolve failure", transition, err)
 	}
 	if active, ok := lifecycle.Active("example"); ok {
 		t.Fatalf("lifecycle after failed Resolve = %+v, want no active incident", active)
