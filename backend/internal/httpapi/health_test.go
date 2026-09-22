@@ -13,7 +13,7 @@ func TestHealth(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/health", nil)
 	response := httptest.NewRecorder()
 
-	NewRouter().ServeHTTP(response, request)
+	NewRouter(&fakeCurrentStatusReader{}, &fakeIncidentsReader{}).ServeHTTP(response, request)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)

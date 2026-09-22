@@ -66,7 +66,7 @@ func TestNewMonitoringRuntimeRequiresIncidentProcessor(t *testing.T) {
 }
 
 func TestNewMonitoringRuntimeUsesOneServiceSnapshot(t *testing.T) {
-	services := []service.Service{{ID: "original", Enabled: true}}
+	services := []service.Service{{ID: "original", Enabled: true}, {ID: "disabled", Enabled: false}}
 	checked := make(chan string, 1)
 	runtime := newTestRuntime(t, services, checkerFunc(func(ctx context.Context, svc service.Service) monitoring.CheckResult {
 		checked <- svc.ID
@@ -76,8 +76,15 @@ func TestNewMonitoringRuntimeUsesOneServiceSnapshot(t *testing.T) {
 	services[0].ID = "changed"
 
 	snapshots := runtime.Tracker().Snapshot()
-	if len(snapshots) != 1 || snapshots[0].ServiceID != "original" || snapshots[0].Status != status.StatusUnknown {
-		t.Fatalf("initial snapshots = %+v, want one unknown original service", snapshots)
+	if snapshots == nil || len(snapshots) != 0 {
+		t.Fatalf("initial snapshots = %#v, want non-nil empty snapshot", snapshots)
+	}
+	configured, err := runtime.Tracker().Get("original")
+	if err != nil || configured.Status != status.StatusUnknown || !configured.LastObservedAt.IsZero() {
+		t.Fatalf("Get(original) = (%+v, %v), want configured UNKNOWN view", configured, err)
+	}
+	if _, err := runtime.Tracker().Get("disabled"); !errors.Is(err, status.ErrUnknownService) {
+		t.Fatalf("Get(disabled) error = %v, want ErrUnknownService", err)
 	}
 	if runtime.Tracker() != runtime.tracker {
 		t.Fatal("Tracker() did not return the runtime's authoritative tracker")
@@ -457,7 +464,7 @@ func newTestRuntime(t *testing.T, services []service.Service, checker monitoring
 
 func newTestTracker(t *testing.T) *status.Tracker {
 	t.Helper()
-	tracker, err := status.NewTracker([]service.Service{{ID: "example", Enabled: true}})
+	tracker, err := status.NewTracker([]string{"example"})
 	if err != nil {
 		t.Fatal(err)
 	}

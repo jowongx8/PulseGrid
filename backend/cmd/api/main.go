@@ -68,10 +68,18 @@ func run(ctx context.Context, logger *slog.Logger) (retErr error) {
 	if err != nil {
 		return fmt.Errorf("create monitoring runtime: %w", err)
 	}
+	currentStatusQuery, err := app.NewCurrentStatusQuery(services, runtime.Tracker())
+	if err != nil {
+		return fmt.Errorf("create current status query: %w", err)
+	}
+	incidentsQuery, err := app.NewIncidentsQuery(incidentStore)
+	if err != nil {
+		return fmt.Errorf("create incidents query: %w", err)
+	}
 
 	server := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.Port),
-		Handler:           httpapi.NewRouter(),
+		Handler:           httpapi.NewRouter(currentStatusQuery, incidentsQuery),
 		ReadHeaderTimeout: readHeaderTimeout,
 	}
 

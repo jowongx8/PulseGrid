@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/jowongx8/backend/internal/monitoring"
-	"github.com/jowongx8/backend/internal/service"
 )
 
 const (
@@ -22,9 +21,9 @@ const (
 // out-of-order concurrent observations of the same service. Normal runtime
 // integration should deliver observations for a service in event-time order.
 type Tracker struct {
-	mu     sync.RWMutex
-	order  []string
-	states map[string]*serviceState
+	mu         sync.RWMutex
+	configured map[string]struct{}
+	states     map[string]*serviceState
 }
 
 type serviceState struct {
@@ -36,30 +35,25 @@ type serviceState struct {
 	indeterminateStreak int
 }
 
-func NewTracker(services []service.Service) (*Tracker, error) {
+func NewTracker(serviceIDs []string) (*Tracker, error) {
 	tracker := &Tracker{
-		order:  make([]string, 0, len(services)),
-		states: make(map[string]*serviceState, len(services)),
+		configured: make(map[string]struct{}, len(serviceIDs)),
+		states:     make(map[string]*serviceState, len(serviceIDs)),
 	}
 
-	for index, svc := range services {
-		if !svc.Enabled {
-			continue
-		}
-
-		if svc.ID == "" {
+	for index, serviceID := range serviceIDs {
+		if serviceID == "" {
 			return nil, fmt.Errorf("%w: service at index %d", ErrInvalidServiceID, index)
 		}
 
-		if _, exists := tracker.states[svc.ID]; exists {
-			return nil, fmt.Errorf("%w: service %q", ErrDuplicateServiceID, svc.ID)
+		if _, exists := tracker.configured[serviceID]; exists {
+			return nil, fmt.Errorf("%w: service %q", ErrDuplicateServiceID, serviceID)
 		}
 
-		tracker.order = append(tracker.order, svc.ID)
-		tracker.states[svc.ID] = &serviceState{status: StatusUnknown}
+		tracker.configured[serviceID] = struct{}{}
 	}
 
-	if len(tracker.order) == 0 {
+	if len(tracker.configured) == 0 {
 		return nil, ErrNoEnabledServices
 	}
 
@@ -70,8 +64,7 @@ func (t *Tracker) Apply(observation monitoring.Observation) (Update, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	state, exists := t.states[observation.ServiceID]
-	if !exists {
+	if _, configured := t.configured[observation.ServiceID]; !configured {
 		return Update{}, fmt.Errorf("%w: service %q", ErrUnknownService, observation.ServiceID)
 	}
 
@@ -83,7 +76,11 @@ func (t *Tracker) Apply(observation monitoring.Observation) (Update, error) {
 		return Update{}, fmt.Errorf("%w: %q", ErrInvalidObservationKind, observation.Kind)
 	}
 
-	previous := state.status
+	state, observed := t.states[observation.ServiceID]
+	previous := StatusUnknown
+	if observed {
+		previous = state.status
+	}
 	update := Update{
 		ServiceID:  observation.ServiceID,
 		Previous:   previous,
@@ -91,12 +88,16 @@ func (t *Tracker) Apply(observation monitoring.Observation) (Update, error) {
 		ObservedAt: observation.ObservedAt,
 	}
 
-	if !state.lastObservedAt.IsZero() && !observation.ObservedAt.After(state.lastObservedAt) {
+	if observed && !observation.ObservedAt.After(state.lastObservedAt) {
 		return update, nil
 	}
 
 	if observation.Kind == monitoring.ObservationIgnored {
 		return update, nil
+	}
+	if !observed {
+		state = &serviceState{status: StatusUnknown}
+		t.states[observation.ServiceID] = state
 	}
 
 	state.apply(observation.Kind)
@@ -116,24 +117,30 @@ func (t *Tracker) Get(serviceID string) (ServiceSnapshot, error) {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
-	state, exists := t.states[serviceID]
-	if !exists {
+	if _, configured := t.configured[serviceID]; !configured {
 		return ServiceSnapshot{}, fmt.Errorf("%w: service %q", ErrUnknownService, serviceID)
+	}
+	state, observed := t.states[serviceID]
+	if !observed {
+		return ServiceSnapshot{ServiceID: serviceID, Status: StatusUnknown}, nil
 	}
 
 	return snapshotFor(serviceID, state), nil
 }
 
-func (t *Tracker) Snapshot() []ServiceSnapshot {
+func (t *Tracker) Snapshot() Snapshot {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
-	snapshots := make([]ServiceSnapshot, 0, len(t.order))
-	for _, serviceID := range t.order {
-		snapshots = append(snapshots, snapshotFor(serviceID, t.states[serviceID]))
+	snapshot := make(Snapshot, len(t.states))
+	for serviceID, state := range t.states {
+		snapshot[serviceID] = SnapshotEntry{
+			State:         state.status,
+			LastCheckedAt: state.lastObservedAt,
+		}
 	}
 
-	return snapshots
+	return snapshot
 }
 
 func (s *serviceState) apply(kind monitoring.ObservationKind) {

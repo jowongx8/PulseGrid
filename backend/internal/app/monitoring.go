@@ -54,8 +54,14 @@ func NewMonitoringRuntime(
 	}
 
 	snapshot := append([]service.Service(nil), services...)
+	serviceIDs := make([]string, 0, len(snapshot))
+	for _, svc := range snapshot {
+		if svc.Enabled {
+			serviceIDs = append(serviceIDs, svc.ID)
+		}
+	}
 
-	tracker, err := status.NewTracker(snapshot)
+	tracker, err := status.NewTracker(serviceIDs)
 	if err != nil {
 		return nil, fmt.Errorf("create status tracker: %w", err)
 	}

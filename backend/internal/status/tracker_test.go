@@ -8,87 +8,61 @@ import (
 	"time"
 
 	"github.com/jowongx8/backend/internal/monitoring"
-	"github.com/jowongx8/backend/internal/service"
 )
 
 var testBaseTime = time.Date(2026, 9, 17, 10, 0, 0, 0, time.UTC)
 
-func TestNewTrackerInitializesEnabledServices(t *testing.T) {
-	services := []service.Service{
-		testService("disabled", false),
-		testService("github", true),
-		testService("cloudflare", true),
-	}
-
-	tracker, err := NewTracker(services)
+func TestNewTrackerSeparatesConfiguredFromObservedServices(t *testing.T) {
+	serviceIDs := []string{"github", "cloudflare"}
+	tracker, err := NewTracker(serviceIDs)
 	if err != nil {
 		t.Fatalf("NewTracker() error = %v", err)
 	}
-
-	services[1].ID = "mutated"
+	serviceIDs[0] = "mutated"
 
 	snapshots := tracker.Snapshot()
-	if len(snapshots) != 2 {
-		t.Fatalf("Snapshot() length = %d, want 2", len(snapshots))
+	if snapshots == nil || len(snapshots) != 0 {
+		t.Fatalf("Snapshot() = %#v, want non-nil empty map", snapshots)
 	}
 
-	wantOrder := []string{"github", "cloudflare"}
-	for index, snapshot := range snapshots {
-		if snapshot.ServiceID != wantOrder[index] {
-			t.Fatalf("Snapshot()[%d].ServiceID = %q, want %q", index, snapshot.ServiceID, wantOrder[index])
-		}
-		if snapshot.Status != StatusUnknown {
-			t.Fatalf("Snapshot()[%d].Status = %q, want %q", index, snapshot.Status, StatusUnknown)
-		}
-		if !snapshot.LastObservedAt.IsZero() {
-			t.Fatalf("Snapshot()[%d].LastObservedAt = %s, want zero", index, snapshot.LastObservedAt)
-		}
-		if !snapshot.StatusChangedAt.IsZero() {
-			t.Fatalf("Snapshot()[%d].StatusChangedAt = %s, want zero", index, snapshot.StatusChangedAt)
-		}
+	configured, err := tracker.Get("github")
+	if err != nil {
+		t.Fatalf("Get(github) error = %v", err)
+	}
+	if configured != (ServiceSnapshot{ServiceID: "github", Status: StatusUnknown}) {
+		t.Fatalf("Get(github) = %+v, want configured UNKNOWN view", configured)
 	}
 
-	if _, err := tracker.Get("disabled"); !errors.Is(err, ErrUnknownService) {
-		t.Fatalf("Get(disabled) error = %v, want ErrUnknownService", err)
+	if _, err := tracker.Get("mutated"); !errors.Is(err, ErrUnknownService) {
+		t.Fatalf("Get(mutated) error = %v, want ErrUnknownService", err)
 	}
 }
 
 func TestNewTrackerValidation(t *testing.T) {
 	tests := []struct {
-		name     string
-		services []service.Service
-		wantErr  error
+		name       string
+		serviceIDs []string
+		wantErr    error
 	}{
 		{
-			name:     "zero enabled services",
-			services: []service.Service{testService("disabled", false)},
-			wantErr:  ErrNoEnabledServices,
+			name:    "zero configured services",
+			wantErr: ErrNoEnabledServices,
 		},
 		{
-			name:     "empty enabled service ID",
-			services: []service.Service{{Enabled: true}},
-			wantErr:  ErrInvalidServiceID,
+			name:       "empty service ID",
+			serviceIDs: []string{""},
+			wantErr:    ErrInvalidServiceID,
 		},
 		{
-			name: "duplicate enabled service ID",
-			services: []service.Service{
-				testService("github", true),
-				testService("github", true),
-			},
-			wantErr: ErrDuplicateServiceID,
-		},
-		{
-			name: "duplicate disabled service ID is ignored",
-			services: []service.Service{
-				testService("github", true),
-				testService("github", false),
-			},
+			name:       "duplicate service ID",
+			serviceIDs: []string{"github", "github"},
+			wantErr:    ErrDuplicateServiceID,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tracker, err := NewTracker(tt.services)
+			tracker, err := NewTracker(tt.serviceIDs)
 			if tt.wantErr != nil {
 				if !errors.Is(err, tt.wantErr) {
 					t.Fatalf("NewTracker() error = %v, want %v", err, tt.wantErr)
@@ -535,25 +509,42 @@ func TestTrackerGetUnknownService(t *testing.T) {
 	}
 }
 
-func TestTrackerSnapshotReturnsValueCopiesInConstructorOrder(t *testing.T) {
-	tracker := newTestTracker(t, "github", "cloudflare")
+func TestTrackerSnapshotReturnsObservedValueCopies(t *testing.T) {
+	tracker := newTestTracker(t, "github", "cloudflare", "discord")
 	githubAt := testBaseTime.Add(time.Second)
 	cloudflareAt := testBaseTime.Add(2 * time.Second)
 	applyObservation(t, tracker, "github", monitoring.ObservationHealthy, githubAt)
 	applyObservation(t, tracker, "cloudflare", monitoring.ObservationFailure, cloudflareAt)
 
-	snapshots := tracker.Snapshot()
-	if len(snapshots) != 2 {
-		t.Fatalf("Snapshot() length = %d, want 2", len(snapshots))
+	snapshot := tracker.Snapshot()
+	if len(snapshot) != 2 {
+		t.Fatalf("Snapshot() length = %d, want 2", len(snapshot))
 	}
-	if snapshots[0].ServiceID != "github" || snapshots[1].ServiceID != "cloudflare" {
-		t.Fatalf("Snapshot() order = [%q, %q], want [github, cloudflare]", snapshots[0].ServiceID, snapshots[1].ServiceID)
+	if got := snapshot["github"]; got != (SnapshotEntry{State: StatusUp, LastCheckedAt: githubAt}) {
+		t.Fatalf("Snapshot()[github] = %+v, want UP at %s", got, githubAt)
+	}
+	if got := snapshot["cloudflare"]; got != (SnapshotEntry{State: StatusUnknown, LastCheckedAt: cloudflareAt}) {
+		t.Fatalf("Snapshot()[cloudflare] = %+v, want UNKNOWN at %s", got, cloudflareAt)
+	}
+	if _, exists := snapshot["discord"]; exists {
+		t.Fatal("Snapshot() contains configured but unobserved discord")
+	}
+	for serviceID, entry := range snapshot {
+		if entry.LastCheckedAt.IsZero() {
+			t.Fatalf("Snapshot()[%q].LastCheckedAt is zero", serviceID)
+		}
 	}
 
-	snapshots[0] = ServiceSnapshot{ServiceID: "mutated", Status: StatusDown}
+	delete(snapshot, "github")
+	snapshot["cloudflare"] = SnapshotEntry{State: StatusDown, LastCheckedAt: testBaseTime}
+	snapshot["fake"] = SnapshotEntry{State: StatusDown, LastCheckedAt: testBaseTime}
 	next := tracker.Snapshot()
-	if next[0].ServiceID != "github" || next[0].Status != StatusUp {
-		t.Fatalf("Snapshot() exposed mutable state: got %+v", next[0])
+	if len(next) != 2 || next["github"] != (SnapshotEntry{State: StatusUp, LastCheckedAt: githubAt}) ||
+		next["cloudflare"] != (SnapshotEntry{State: StatusUnknown, LastCheckedAt: cloudflareAt}) {
+		t.Fatalf("Snapshot() exposed mutable state: got %+v", next)
+	}
+	if _, exists := next["fake"]; exists {
+		t.Fatal("Snapshot() retained caller-added service")
 	}
 
 	got, err := tracker.Get("github")
@@ -565,14 +556,72 @@ func TestTrackerSnapshotReturnsValueCopiesInConstructorOrder(t *testing.T) {
 	}
 }
 
-func TestTrackerConcurrentAccessIsRaceSafe(t *testing.T) {
-	const serviceCount = 8
-	services := make([]service.Service, 0, serviceCount)
-	for index := range serviceCount {
-		services = append(services, testService(fmt.Sprintf("service-%d", index), true))
+func TestTrackerSnapshotRemainsIndependentAfterNewObservation(t *testing.T) {
+	tracker := newTestTracker(t, "github")
+	firstAt := testBaseTime.Add(time.Second)
+	secondAt := testBaseTime.Add(2 * time.Second)
+	applyObservation(t, tracker, "github", monitoring.ObservationHealthy, firstAt)
+
+	first := tracker.Snapshot()
+	applyObservation(t, tracker, "github", monitoring.ObservationHealthy, secondAt)
+	second := tracker.Snapshot()
+
+	if got := first["github"]; got != (SnapshotEntry{State: StatusUp, LastCheckedAt: firstAt}) {
+		t.Fatalf("first Snapshot()[github] = %+v, want UP at %s", got, firstAt)
+	}
+	if got := second["github"]; got != (SnapshotEntry{State: StatusUp, LastCheckedAt: secondAt}) {
+		t.Fatalf("second Snapshot()[github] = %+v, want UP at %s", got, secondAt)
+	}
+}
+
+func TestTrackerSnapshotTimestampFollowsAcceptedObservations(t *testing.T) {
+	tracker := newTestTracker(t, "github")
+	times := sequentialTimes(5, time.Second)
+
+	applyObservation(t, tracker, "github", monitoring.ObservationHealthy, times[0])
+	assertSnapshotEntry(t, tracker, "github", SnapshotEntry{State: StatusUp, LastCheckedAt: times[0]})
+
+	applyObservation(t, tracker, "github", monitoring.ObservationHealthy, times[1])
+	assertSnapshotEntry(t, tracker, "github", SnapshotEntry{State: StatusUp, LastCheckedAt: times[1]})
+
+	applyObservation(t, tracker, "github", monitoring.ObservationFailure, times[2])
+	assertSnapshotEntry(t, tracker, "github", SnapshotEntry{State: StatusUp, LastCheckedAt: times[2]})
+	applyObservation(t, tracker, "github", monitoring.ObservationFailure, times[3])
+	applyObservation(t, tracker, "github", monitoring.ObservationFailure, times[4])
+	assertSnapshotEntry(t, tracker, "github", SnapshotEntry{State: StatusDown, LastCheckedAt: times[4]})
+}
+
+func TestTrackerSnapshotExcludesUnappliedObservations(t *testing.T) {
+	tracker := newTestTracker(t, "github")
+	ignoredAt := testBaseTime.Add(time.Second)
+	applyObservation(t, tracker, "github", monitoring.ObservationIgnored, ignoredAt)
+	if snapshot := tracker.Snapshot(); len(snapshot) != 0 {
+		t.Fatalf("Snapshot() after first ignored observation = %+v, want empty", snapshot)
 	}
 
-	tracker, err := NewTracker(services)
+	acceptedAt := testBaseTime.Add(3 * time.Second)
+	applyObservation(t, tracker, "github", monitoring.ObservationFailure, acceptedAt)
+	want := SnapshotEntry{State: StatusUnknown, LastCheckedAt: acceptedAt}
+	for _, observation := range []monitoring.Observation{
+		newObservation("github", monitoring.ObservationHealthy, acceptedAt.Add(-time.Second)),
+		newObservation("github", monitoring.ObservationIndeterminate, acceptedAt),
+		newObservation("github", monitoring.ObservationIgnored, acceptedAt.Add(time.Second)),
+	} {
+		if update, err := tracker.Apply(observation); err != nil || update.Applied {
+			t.Fatalf("Apply(%+v) = (%+v, %v), want unapplied observation", observation, update, err)
+		}
+		assertSnapshotEntry(t, tracker, "github", want)
+	}
+}
+
+func TestTrackerConcurrentAccessIsRaceSafe(t *testing.T) {
+	const serviceCount = 8
+	serviceIDs := make([]string, 0, serviceCount)
+	for index := range serviceCount {
+		serviceIDs = append(serviceIDs, fmt.Sprintf("service-%d", index))
+	}
+
+	tracker, err := NewTracker(serviceIDs)
 	if err != nil {
 		t.Fatalf("NewTracker() error = %v", err)
 	}
@@ -581,7 +630,7 @@ func TestTrackerConcurrentAccessIsRaceSafe(t *testing.T) {
 	errs := make(chan error, serviceCount)
 	start := make(chan struct{})
 
-	for index, svc := range services {
+	for index, serviceID := range serviceIDs {
 		wg.Add(1)
 		go func(index int, serviceID string) {
 			defer wg.Done()
@@ -606,7 +655,7 @@ func TestTrackerConcurrentAccessIsRaceSafe(t *testing.T) {
 				}
 				_ = tracker.Snapshot()
 			}
-		}(index, svc.ID)
+		}(index, serviceID)
 	}
 
 	close(start)
@@ -617,6 +666,38 @@ func TestTrackerConcurrentAccessIsRaceSafe(t *testing.T) {
 		if err != nil {
 			t.Fatalf("concurrent access error = %v", err)
 		}
+	}
+}
+
+func TestTrackerConcurrentSnapshotReaders(t *testing.T) {
+	const readerCount = 8
+	tracker := newTestTracker(t, "github")
+	observedAt := testBaseTime.Add(time.Second)
+	applyObservation(t, tracker, "github", monitoring.ObservationHealthy, observedAt)
+	want := SnapshotEntry{State: StatusUp, LastCheckedAt: observedAt}
+
+	start := make(chan struct{})
+	errs := make(chan error, readerCount)
+	var wg sync.WaitGroup
+	for range readerCount {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for range 100 {
+				if got := tracker.Snapshot()["github"]; got != want {
+					errs <- fmt.Errorf("Snapshot()[github] = %+v, want %+v", got, want)
+					return
+				}
+			}
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
 	}
 }
 
@@ -673,24 +754,12 @@ func assertStatusAfter(t *testing.T, tracker *Tracker, kind monitoring.Observati
 func newTestTracker(t *testing.T, serviceIDs ...string) *Tracker {
 	t.Helper()
 
-	services := make([]service.Service, 0, len(serviceIDs))
-	for _, serviceID := range serviceIDs {
-		services = append(services, testService(serviceID, true))
-	}
-
-	tracker, err := NewTracker(services)
+	tracker, err := NewTracker(serviceIDs)
 	if err != nil {
 		t.Fatalf("NewTracker() error = %v", err)
 	}
 
 	return tracker
-}
-
-func testService(id string, enabled bool) service.Service {
-	return service.Service{
-		ID:      id,
-		Enabled: enabled,
-	}
 }
 
 func applyObservation(t *testing.T, tracker *Tracker, serviceID string, kind monitoring.ObservationKind, observedAt time.Time) Update {
@@ -732,6 +801,15 @@ func assertSnapshot(t *testing.T, tracker *Tracker, serviceID string, want Servi
 	}
 }
 
+func assertSnapshotEntry(t *testing.T, tracker *Tracker, serviceID string, want SnapshotEntry) {
+	t.Helper()
+
+	got, exists := tracker.Snapshot()[serviceID]
+	if !exists || got != want {
+		t.Fatalf("Snapshot()[%q] = (%+v, %t), want %+v", serviceID, got, exists, want)
+	}
+}
+
 func assertUpdate(t *testing.T, got Update, want Update) {
 	t.Helper()
 
@@ -748,12 +826,12 @@ func sequentialTimes(count int, startOffset time.Duration) []time.Time {
 	return times
 }
 
-func equalSnapshots(a, b []ServiceSnapshot) bool {
+func equalSnapshots(a, b Snapshot) bool {
 	if len(a) != len(b) {
 		return false
 	}
-	for index := range a {
-		if a[index] != b[index] {
+	for serviceID, entry := range a {
+		if other, exists := b[serviceID]; !exists || other != entry {
 			return false
 		}
 	}
