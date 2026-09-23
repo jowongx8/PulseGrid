@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -85,7 +86,7 @@ func run(ctx context.Context, logger *slog.Logger) (retErr error) {
 
 	server := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.Port),
-		Handler:           httpapi.NewRouter(currentStatusQuery, incidentsQuery),
+		Handler:           httpapi.NewRouter(currentStatusQuery, incidentsQuery, eventBroker),
 		ReadHeaderTimeout: readHeaderTimeout,
 	}
 
@@ -100,6 +101,9 @@ func runApplication(
 ) error {
 	appCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	server.BaseContext = func(net.Listener) context.Context {
+		return appCtx
+	}
 
 	var shutdownStarted atomic.Bool
 	serverDone := make(chan error, 1)

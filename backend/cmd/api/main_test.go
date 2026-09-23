@@ -8,16 +8,19 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/jowongx8/backend/internal/app"
 	"github.com/jowongx8/backend/internal/event"
 	"github.com/jowongx8/backend/internal/httpapi"
+	"github.com/jowongx8/backend/internal/status"
 	"github.com/jowongx8/backend/internal/storage/sqlite"
 )
 
@@ -103,7 +106,7 @@ func TestRunApplicationCancelsMonitoringOnHTTPFailure(t *testing.T) {
 	defer occupied.Close()
 
 	monitoringStopped := make(chan struct{})
-	server := &http.Server{Addr: occupied.Addr().String(), Handler: httpapi.NewRouter(emptyCurrentStatusReader{}, emptyIncidentsReader{})}
+	server := &http.Server{Addr: occupied.Addr().String(), Handler: httpapi.NewRouter(emptyCurrentStatusReader{}, emptyIncidentsReader{}, unavailableEventSubscriber{})}
 	done := make(chan error, 1)
 	go func() {
 		done <- runApplication(context.Background(), server, func(ctx context.Context) error {
@@ -150,8 +153,108 @@ func TestRunApplicationRejectsUnexpectedMonitoringExit(t *testing.T) {
 	}
 }
 
+func TestRunApplicationCancelsSSEBeforeCompositionClosesBroker(t *testing.T) {
+	broker, err := event.NewBroker(event.DefaultSubscriberBufferSize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(broker.Close)
+	rootCtx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	monitoringContext := make(chan context.Context, 1)
+	publishResult := make(chan error, 1)
+	server := &http.Server{
+		Addr:    "127.0.0.1:0",
+		Handler: httpapi.NewRouter(emptyCurrentStatusReader{}, emptyIncidentsReader{}, broker),
+	}
+	applicationDone := make(chan error, 1)
+	go func() {
+		applicationDone <- runApplication(rootCtx, server, func(ctx context.Context) error {
+			monitoringContext <- ctx
+			<-ctx.Done()
+			publishResult <- broker.Publish(event.StatusChanged{
+				ServiceID:     "github",
+				State:         status.StatusUp,
+				LastCheckedAt: time.Date(2026, 9, 22, 15, 0, 0, 0, time.UTC),
+			})
+			return nil
+		}, testLogger())
+	}()
+
+	appCtx := waitForContext(t, monitoringContext)
+	if server.BaseContext == nil {
+		t.Fatal("server BaseContext was not configured")
+	}
+	requestCtx := server.BaseContext(nil)
+	if requestCtx != appCtx {
+		t.Fatal("request base context does not match monitoring application context")
+	}
+
+	response := newApplicationStreamWriter()
+	handlerDone := make(chan struct{})
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/events", nil).WithContext(requestCtx)
+	go func() {
+		server.Handler.ServeHTTP(response, request)
+		close(handlerDone)
+	}()
+	waitForSignal(t, response.initialFlushed)
+
+	cancel()
+	waitForPromptSignal(t, handlerDone)
+	if err := waitForError(t, applicationDone); err != nil {
+		t.Fatalf("runApplication() after cancellation = %v, want nil", err)
+	}
+	if err := waitForPublishResult(t, publishResult); err != nil {
+		t.Fatalf("publication after cancellation = %v, want nil", err)
+	}
+
+	subscription, err := broker.Subscribe()
+	if err != nil {
+		t.Fatalf("Subscribe() after runApplication = %v, want broker open", err)
+	}
+	subscription.Close()
+
+	broker.Close()
+	if err := broker.Publish(event.IncidentOpened{ServiceID: "github", StartedAt: time.Now()}); !errors.Is(err, event.ErrClosed) {
+		t.Fatalf("Publish() after composition close = %v, want ErrClosed", err)
+	}
+}
+
 func testServer() *http.Server {
-	return &http.Server{Addr: "127.0.0.1:0", Handler: httpapi.NewRouter(emptyCurrentStatusReader{}, emptyIncidentsReader{})}
+	return &http.Server{Addr: "127.0.0.1:0", Handler: httpapi.NewRouter(emptyCurrentStatusReader{}, emptyIncidentsReader{}, unavailableEventSubscriber{})}
+}
+
+type unavailableEventSubscriber struct{}
+
+func (unavailableEventSubscriber) Subscribe() (*event.Subscription, error) {
+	return nil, event.ErrClosed
+}
+
+type applicationStreamWriter struct {
+	header         http.Header
+	initialFlushed chan struct{}
+	flushOnce      sync.Once
+}
+
+func newApplicationStreamWriter() *applicationStreamWriter {
+	return &applicationStreamWriter{
+		header:         make(http.Header),
+		initialFlushed: make(chan struct{}),
+	}
+}
+
+func (w *applicationStreamWriter) Header() http.Header {
+	return w.header
+}
+
+func (*applicationStreamWriter) WriteHeader(int) {}
+
+func (*applicationStreamWriter) Write(body []byte) (int, error) {
+	return len(body), nil
+}
+
+func (w *applicationStreamWriter) Flush() {
+	w.flushOnce.Do(func() { close(w.initialFlushed) })
 }
 
 type emptyCurrentStatusReader struct{}
@@ -176,6 +279,37 @@ func waitForSignal(t *testing.T, signal <-chan struct{}) {
 	case <-signal:
 	case <-time.After(supervisorTestTimeout):
 		t.Fatal("timed out waiting for signal")
+	}
+}
+
+func waitForPromptSignal(t *testing.T, signal <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for prompt shutdown")
+	}
+}
+
+func waitForContext(t *testing.T, contexts <-chan context.Context) context.Context {
+	t.Helper()
+	select {
+	case ctx := <-contexts:
+		return ctx
+	case <-time.After(supervisorTestTimeout):
+		t.Fatal("timed out waiting for application context")
+		return nil
+	}
+}
+
+func waitForPublishResult(t *testing.T, results <-chan error) error {
+	t.Helper()
+	select {
+	case err := <-results:
+		return err
+	case <-time.After(supervisorTestTimeout):
+		t.Fatal("timed out waiting for publication result")
+		return nil
 	}
 }
 

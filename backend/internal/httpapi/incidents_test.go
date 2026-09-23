@@ -46,7 +46,7 @@ func TestIncidentsReturnsPublicIncidentFeed(t *testing.T) {
 	request = request.WithContext(context.WithValue(request.Context(), incidentsContextKey{}, "request"))
 	response := httptest.NewRecorder()
 
-	NewRouter(&fakeCurrentStatusReader{}, reader).ServeHTTP(response, request)
+	NewRouter(&fakeCurrentStatusReader{}, reader, unavailableEventSubscriber{}).ServeHTTP(response, request)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
@@ -101,7 +101,7 @@ func TestIncidentsReturnsEmptyArrays(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/incidents", nil)
 	response := httptest.NewRecorder()
 
-	NewRouter(&fakeCurrentStatusReader{}, reader).ServeHTTP(response, request)
+	NewRouter(&fakeCurrentStatusReader{}, reader, unavailableEventSubscriber{}).ServeHTTP(response, request)
 
 	if got := response.Body.String(); got != `{"active":[],"resolved":[]}` {
 		t.Fatalf("response body = %q, want nonnull empty incident arrays", got)
@@ -117,7 +117,7 @@ func TestIncidentsReturnsGenericInternalServerError(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/incidents", nil)
 	response := httptest.NewRecorder()
 
-	NewRouter(&fakeCurrentStatusReader{}, reader).ServeHTTP(response, request)
+	NewRouter(&fakeCurrentStatusReader{}, reader, unavailableEventSubscriber{}).ServeHTTP(response, request)
 
 	if response.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusInternalServerError)
@@ -135,7 +135,7 @@ func TestIncidentsRejectsPostWithoutInvokingReader(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/incidents", nil)
 	response := httptest.NewRecorder()
 
-	NewRouter(&fakeCurrentStatusReader{}, reader).ServeHTTP(response, request)
+	NewRouter(&fakeCurrentStatusReader{}, reader, unavailableEventSubscriber{}).ServeHTTP(response, request)
 
 	if response.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusMethodNotAllowed)
