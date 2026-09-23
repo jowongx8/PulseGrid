@@ -102,13 +102,15 @@ func TestProcessResultsPublishesStatusChangeOnly(t *testing.T) {
 
 func TestProcessResultsPublishesOpeningAfterPersistence(t *testing.T) {
 	base := time.Date(2026, 9, 23, 10, 0, 0, 0, time.UTC)
+	startedAt := base.Add(2*time.Second + 123_456_789*time.Nanosecond)
+	canonicalStartedAt := time.UnixMicro(startedAt.UnixMicro()).UTC()
 	tracker := newTestTracker(t)
 	primeFailures(t, tracker, base, 2)
 	persisted := false
 	processor := NewIncidentProcessor(incident.NewLifecycle(), incidentWriterFuncs{
 		open: func(_ context.Context, value incident.Incident) error {
 			persisted = true
-			if value.ServiceID != "example" || !value.StartedAt.Equal(base.Add(2*time.Second)) || value.ResolvedAt != nil {
+			if value.ServiceID != "example" || value.StartedAt != canonicalStartedAt || value.ResolvedAt != nil {
 				return errors.New("unexpected opening persisted")
 			}
 			return nil
@@ -120,7 +122,7 @@ func TestProcessResultsPublishesOpeningAfterPersistence(t *testing.T) {
 
 	err := processSingleResult(
 		t,
-		monitoring.CheckResult{ServiceID: "example", CheckedAt: base.Add(2 * time.Second), StatusCode: 503},
+		monitoring.CheckResult{ServiceID: "example", CheckedAt: startedAt, StatusCode: 503},
 		tracker,
 		processor,
 		eventPublisherFunc(func(value event.Event) error {
@@ -137,8 +139,8 @@ func TestProcessResultsPublishesOpeningAfterPersistence(t *testing.T) {
 	}
 
 	want := []event.Event{
-		event.StatusChanged{ServiceID: "example", State: status.StatusDown, LastCheckedAt: base.Add(2 * time.Second)},
-		event.IncidentOpened{ServiceID: "example", StartedAt: base.Add(2 * time.Second)},
+		event.StatusChanged{ServiceID: "example", State: status.StatusDown, LastCheckedAt: startedAt},
+		event.IncidentOpened{ServiceID: "example", StartedAt: canonicalStartedAt},
 	}
 	if publishedBeforePersistence || !reflect.DeepEqual(published, want) {
 		t.Fatalf("published before persistence = %t, events = %#v, want %#v", publishedBeforePersistence, published, want)
@@ -148,8 +150,10 @@ func TestProcessResultsPublishesOpeningAfterPersistence(t *testing.T) {
 
 func TestProcessResultsPublishesResolutionAfterPersistence(t *testing.T) {
 	base := time.Date(2026, 9, 23, 10, 0, 0, 0, time.UTC)
-	startedAt := base.Add(2 * time.Second)
-	resolvedAt := base.Add(4 * time.Second)
+	startedAt := base.Add(2*time.Second + 123_456_789*time.Nanosecond)
+	resolvedAt := base.Add(4*time.Second + 987_654_321*time.Nanosecond)
+	canonicalStartedAt := time.UnixMicro(startedAt.UnixMicro()).UTC()
+	canonicalResolvedAt := time.UnixMicro(resolvedAt.UnixMicro()).UTC()
 	tracker := newTestTracker(t)
 	primeFailures(t, tracker, base, 3)
 	applyTestObservation(t, tracker, monitoring.ObservationHealthy, base.Add(3*time.Second))
@@ -161,7 +165,7 @@ func TestProcessResultsPublishesResolutionAfterPersistence(t *testing.T) {
 	processor := NewIncidentProcessor(lifecycle, incidentWriterFuncs{
 		resolve: func(_ context.Context, value incident.Incident) error {
 			persisted = true
-			if value.ResolvedAt == nil || !value.StartedAt.Equal(startedAt) || !value.ResolvedAt.Equal(resolvedAt) {
+			if value.ResolvedAt == nil || value.StartedAt != canonicalStartedAt || *value.ResolvedAt != canonicalResolvedAt {
 				return errors.New("unexpected resolution persisted")
 			}
 			return nil
@@ -191,7 +195,7 @@ func TestProcessResultsPublishesResolutionAfterPersistence(t *testing.T) {
 
 	want := []event.Event{
 		event.StatusChanged{ServiceID: "example", State: status.StatusUp, LastCheckedAt: resolvedAt},
-		event.IncidentResolved{ServiceID: "example", StartedAt: startedAt, ResolvedAt: resolvedAt},
+		event.IncidentResolved{ServiceID: "example", StartedAt: canonicalStartedAt, ResolvedAt: canonicalResolvedAt},
 	}
 	if publishedBeforePersistence || !reflect.DeepEqual(published, want) {
 		t.Fatalf("published before persistence = %t, events = %#v, want %#v", publishedBeforePersistence, published, want)

@@ -48,7 +48,7 @@ func TestRunFailsBeforeStartingServicesWhenIncidentRestorationFails(t *testing.T
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`
-		INSERT INTO incidents (service_id, started_at_ms, resolved_at_ms)
+		INSERT INTO incidents (service_id, started_at_us, resolved_at_us)
 		VALUES (?, ?, NULL)
 	`, "github", "not-a-timestamp"); err != nil {
 		t.Fatalf("insert malformed incident: %v", err)

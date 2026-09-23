@@ -149,8 +149,10 @@ func TestRestoreOpenIncidentsRetainsPartialRestoration(t *testing.T) {
 }
 
 func TestIncidentProcessorRoutesAuthoritativeUpdates(t *testing.T) {
-	start := time.Date(2026, 9, 18, 10, 0, 0, 0, time.UTC)
-	end := start.Add(time.Minute)
+	start := time.Date(2026, 9, 18, 10, 0, 0, 123_456_789, time.FixedZone("AEST", 10*60*60))
+	end := start.Add(time.Minute + 987*time.Nanosecond)
+	wantStart := time.UnixMicro(start.UnixMicro()).UTC()
+	wantEnd := time.UnixMicro(end.UnixMicro()).UTC()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var opened, resolved []incident.Incident
@@ -192,26 +194,30 @@ func TestIncidentProcessorRoutesAuthoritativeUpdates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if openedTransition == nil || openedTransition.ServiceID != "example" || !openedTransition.StartedAt.Equal(start) || openedTransition.ResolvedAt != nil {
+	if openedTransition == nil || openedTransition.ServiceID != "example" || openedTransition.StartedAt != wantStart || openedTransition.ResolvedAt != nil {
 		t.Fatalf("opening transition = %+v", openedTransition)
 	}
-	if len(opened) != 1 || opened[0].ServiceID != "example" || !opened[0].StartedAt.Equal(start) || opened[0].ResolvedAt != nil || len(resolved) != 0 {
+	if len(opened) != 1 || opened[0].ServiceID != "example" || opened[0].StartedAt != wantStart || opened[0].ResolvedAt != nil || len(resolved) != 0 {
 		t.Fatalf("writer calls after opening = opens %v, resolutions %v", opened, resolved)
+	}
+	active, ok := processor.lifecycle.Active("example")
+	if !ok || active.StartedAt != start || active.StartedAt == wantStart {
+		t.Fatalf("lifecycle active incident = (%+v, %t), want original high-precision start %s", active, ok, start)
 	}
 	resolvedTransition, err := processor.Process(ctx, testIncidentUpdate(status.StatusDown, status.StatusUp, end))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolvedTransition == nil || resolvedTransition.ServiceID != "example" || !resolvedTransition.StartedAt.Equal(start) ||
-		resolvedTransition.ResolvedAt == nil || !resolvedTransition.ResolvedAt.Equal(end) {
+	if resolvedTransition == nil || resolvedTransition.ServiceID != "example" || resolvedTransition.StartedAt != wantStart ||
+		resolvedTransition.ResolvedAt == nil || *resolvedTransition.ResolvedAt != wantEnd {
 		t.Fatalf("resolution transition = %+v", resolvedTransition)
 	}
 	if len(opened) != 1 || len(resolved) != 1 || resolved[0].ServiceID != "example" ||
-		!resolved[0].StartedAt.Equal(start) || resolved[0].ResolvedAt == nil || !resolved[0].ResolvedAt.Equal(end) {
+		resolved[0].StartedAt != wantStart || resolved[0].ResolvedAt == nil || *resolved[0].ResolvedAt != wantEnd {
 		t.Fatalf("writer calls after resolution = opens %v, resolutions %v", opened, resolved)
 	}
 	*resolvedTransition.ResolvedAt = end.Add(time.Hour)
-	if !resolved[0].ResolvedAt.Equal(end) {
+	if *resolved[0].ResolvedAt != wantEnd {
 		t.Fatalf("mutating returned resolution changed writer value to %s", resolved[0].ResolvedAt)
 	}
 }

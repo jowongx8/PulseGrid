@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jowongx8/backend/internal/incident"
 	"github.com/jowongx8/backend/internal/status"
@@ -52,7 +53,7 @@ func (p *IncidentProcessor) Process(ctx context.Context, update status.Update) (
 		return nil, nil
 	}
 
-	transition := copyIncident(*value)
+	transition := canonicalIncident(*value)
 	if transition.ResolvedAt == nil {
 		if err := p.writer.Open(ctx, copyIncident(transition)); err != nil {
 			return nil, fmt.Errorf("open incident for service %q: %w", transition.ServiceID, err)
@@ -71,4 +72,17 @@ func copyIncident(value incident.Incident) incident.Incident {
 		value.ResolvedAt = &resolvedAt
 	}
 	return value
+}
+
+func canonicalIncident(value incident.Incident) incident.Incident {
+	value.StartedAt = canonicalIncidentTime(value.StartedAt)
+	if value.ResolvedAt != nil {
+		resolvedAt := canonicalIncidentTime(*value.ResolvedAt)
+		value.ResolvedAt = &resolvedAt
+	}
+	return value
+}
+
+func canonicalIncidentTime(value time.Time) time.Time {
+	return time.UnixMicro(value.UnixMicro()).UTC()
 }

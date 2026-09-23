@@ -28,6 +28,51 @@ func TestIncidentStoreListFeedReturnsNonNilEmptyGroups(t *testing.T) {
 	}
 }
 
+func TestIncidentSchemaUsesMicrosecondTimestampColumns(t *testing.T) {
+	db := openIncidentTestDB(t)
+	rows, err := db.Query("PRAGMA table_info(incidents)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+
+	columns := make(map[string]bool)
+	for rows.Next() {
+		var position, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&position, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			t.Fatal(err)
+		}
+		columns[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"started_at_us", "resolved_at_us"} {
+		if !columns[name] {
+			t.Errorf("incidents column %q is missing", name)
+		}
+	}
+	for _, name := range []string{"started_at_ms", "resolved_at_ms"} {
+		if columns[name] {
+			t.Errorf("legacy incidents column %q still exists", name)
+		}
+	}
+
+	var indexSQL string
+	if err := db.QueryRow(`
+		SELECT sql
+		FROM sqlite_master
+		WHERE type = 'index' AND name = 'idx_incidents_one_open_per_service'
+	`).Scan(&indexSQL); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(indexSQL, "WHERE resolved_at_us IS NULL") {
+		t.Fatalf("open-incident index SQL = %q, want microsecond resolution predicate", indexSQL)
+	}
+}
+
 func TestIncidentStoreListFeedOrdersGroupsDeterministically(t *testing.T) {
 	db := openIncidentTestDB(t)
 	for _, value := range []struct {
@@ -55,10 +100,16 @@ func TestIncidentStoreListFeedOrdersGroupsDeterministically(t *testing.T) {
 		if value.ResolvedAt != nil {
 			t.Fatalf("active incident %+v has a resolution time", value)
 		}
+		if value.StartedAt.Location() != time.UTC {
+			t.Fatalf("active incident location = %v, want UTC", value.StartedAt.Location())
+		}
 	}
 	for _, value := range resolved {
 		if value.ResolvedAt == nil {
 			t.Fatalf("resolved incident %+v has no resolution time", value)
+		}
+		if value.StartedAt.Location() != time.UTC || value.ResolvedAt.Location() != time.UTC {
+			t.Fatalf("resolved incident locations = (%v, %v), want UTC", value.StartedAt.Location(), value.ResolvedAt.Location())
 		}
 	}
 }
@@ -126,7 +177,7 @@ func TestIncidentStoreListFeedUsesOneReadSnapshot(t *testing.T) {
 	ctx := context.Background()
 	db := openIncidentTestDB(t)
 	store := NewIncidentStore(db)
-	opened := incident.Incident{ServiceID: "github", StartedAt: time.UnixMilli(1_000)}
+	opened := incident.Incident{ServiceID: "github", StartedAt: time.UnixMicro(1_000).UTC()}
 	if err := store.Open(ctx, opened); err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +247,7 @@ func TestIncidentStoreListOpenReturnsEmptyResult(t *testing.T) {
 	}
 }
 
-func TestIncidentStoreListOpenRestoresStoredMilliseconds(t *testing.T) {
+func TestIncidentStoreListOpenRestoresStoredMicrosecondsInUTC(t *testing.T) {
 	db := openIncidentTestDB(t)
 	store := NewIncidentStore(db)
 	original := incident.Incident{
@@ -211,16 +262,20 @@ func TestIncidentStoreListOpenRestoresStoredMilliseconds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListOpen() error = %v", err)
 	}
+	wantStartedAt := time.UnixMicro(original.StartedAt.UnixMicro()).UTC()
 	if len(values) != 1 || values[0].ServiceID != original.ServiceID ||
-		!values[0].StartedAt.Equal(time.UnixMilli(original.StartedAt.UnixMilli())) || values[0].ResolvedAt != nil {
-		t.Fatalf("ListOpen() = %+v, want %q at stored millisecond %s", values, original.ServiceID, time.UnixMilli(original.StartedAt.UnixMilli()))
+		values[0].StartedAt != wantStartedAt || values[0].ResolvedAt != nil {
+		t.Fatalf("ListOpen() = %+v, want %q at stored microsecond %s", values, original.ServiceID, wantStartedAt)
+	}
+	if values[0].StartedAt.Location() != time.UTC {
+		t.Fatalf("ListOpen() location = %v, want UTC", values[0].StartedAt.Location())
 	}
 }
 
 func TestIncidentStoreListOpenOrdersServicesAndExcludesResolvedHistory(t *testing.T) {
 	db := openIncidentTestDB(t)
 	store := NewIncidentStore(db)
-	resolved := incident.Incident{ServiceID: "cloudflare", StartedAt: time.UnixMilli(1000)}
+	resolved := incident.Incident{ServiceID: "cloudflare", StartedAt: time.UnixMicro(1000).UTC()}
 	if err := store.Open(context.Background(), resolved); err != nil {
 		t.Fatal(err)
 	}
@@ -231,8 +286,8 @@ func TestIncidentStoreListOpenOrdersServicesAndExcludesResolvedHistory(t *testin
 	}
 
 	for _, value := range []incident.Incident{
-		{ServiceID: "openai", StartedAt: time.UnixMilli(3000)},
-		{ServiceID: "github", StartedAt: time.UnixMilli(2000)},
+		{ServiceID: "openai", StartedAt: time.UnixMicro(3000).UTC()},
+		{ServiceID: "github", StartedAt: time.UnixMicro(2000).UTC()},
 	} {
 		if err := store.Open(context.Background(), value); err != nil {
 			t.Fatal(err)
@@ -278,7 +333,7 @@ func TestIncidentStoreListOpenReportsQueryFailure(t *testing.T) {
 func TestIncidentStoreListOpenReportsScanFailure(t *testing.T) {
 	db := openIncidentTestDB(t)
 	if _, err := db.Exec(`
-		INSERT INTO incidents (service_id, started_at_ms, resolved_at_ms)
+		INSERT INTO incidents (service_id, started_at_us, resolved_at_us)
 		VALUES (?, ?, NULL)
 	`, "github", "not-a-timestamp"); err != nil {
 		t.Fatalf("insert malformed incident: %v", err)
@@ -300,13 +355,13 @@ func TestIncidentStoreOpenAndResolve(t *testing.T) {
 
 	var id int64
 	var serviceID string
-	var startedAtMS int64
-	var resolvedAtMS sql.NullInt64
-	if err := db.QueryRow("SELECT id, service_id, started_at_ms, resolved_at_ms FROM incidents").Scan(&id, &serviceID, &startedAtMS, &resolvedAtMS); err != nil {
+	var startedAtUS int64
+	var resolvedAtUS sql.NullInt64
+	if err := db.QueryRow("SELECT id, service_id, started_at_us, resolved_at_us FROM incidents").Scan(&id, &serviceID, &startedAtUS, &resolvedAtUS); err != nil {
 		t.Fatal(err)
 	}
-	if id <= 0 || serviceID != "github" || startedAtMS != start.UnixMilli() || resolvedAtMS.Valid {
-		t.Fatalf("opened row = (%d, %q, %d, %+v), want positive ID, github, %d, NULL", id, serviceID, startedAtMS, resolvedAtMS, start.UnixMilli())
+	if id <= 0 || serviceID != "github" || startedAtUS != start.UnixMicro() || resolvedAtUS.Valid {
+		t.Fatalf("opened row = (%d, %q, %d, %+v), want positive ID, github, %d, NULL", id, serviceID, startedAtUS, resolvedAtUS, start.UnixMicro())
 	}
 	assertIncidentCount(t, db, 1)
 
@@ -317,11 +372,11 @@ func TestIncidentStoreOpenAndResolve(t *testing.T) {
 		t.Fatal(err)
 	}
 	var resolvedID int64
-	if err := db.QueryRow("SELECT id, resolved_at_ms FROM incidents").Scan(&resolvedID, &resolvedAtMS); err != nil {
+	if err := db.QueryRow("SELECT id, resolved_at_us FROM incidents").Scan(&resolvedID, &resolvedAtUS); err != nil {
 		t.Fatal(err)
 	}
-	if resolvedID != id || !resolvedAtMS.Valid || resolvedAtMS.Int64 != resolvedAt.UnixMilli() {
-		t.Fatalf("resolved row = (%d, %+v), want (%d, %d)", resolvedID, resolvedAtMS, id, resolvedAt.UnixMilli())
+	if resolvedID != id || !resolvedAtUS.Valid || resolvedAtUS.Int64 != resolvedAt.UnixMicro() {
+		t.Fatalf("resolved row = (%d, %+v), want (%d, %d)", resolvedID, resolvedAtUS, id, resolvedAt.UnixMicro())
 	}
 	assertIncidentCount(t, db, 1)
 }
@@ -343,7 +398,7 @@ func TestIncidentStoreKeepsResolvedHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rows, err := db.Query("SELECT started_at_ms, resolved_at_ms FROM incidents WHERE service_id = ? ORDER BY id", first.ServiceID)
+	rows, err := db.Query("SELECT started_at_us, resolved_at_us FROM incidents WHERE service_id = ? ORDER BY id", first.ServiceID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -362,8 +417,8 @@ func TestIncidentStoreKeepsResolvedHistory(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if len(starts) != 2 || starts[0] != first.StartedAt.UnixMilli() || starts[1] != second.StartedAt.UnixMilli() ||
-		!resolutions[0].Valid || resolutions[0].Int64 != resolvedAt.UnixMilli() || resolutions[1].Valid {
+	if len(starts) != 2 || starts[0] != first.StartedAt.UnixMicro() || starts[1] != second.StartedAt.UnixMicro() ||
+		!resolutions[0].Valid || resolutions[0].Int64 != resolvedAt.UnixMicro() || resolutions[1].Valid {
 		t.Fatalf("history = starts %v, resolutions %v; want resolved first incident and open second incident", starts, resolutions)
 	}
 }
@@ -383,10 +438,10 @@ func TestIncidentStoreRejectsDuplicateOpen(t *testing.T) {
 	assertIncidentCount(t, db, 1)
 	var start int64
 	var resolution sql.NullInt64
-	if err := db.QueryRow("SELECT started_at_ms, resolved_at_ms FROM incidents").Scan(&start, &resolution); err != nil {
+	if err := db.QueryRow("SELECT started_at_us, resolved_at_us FROM incidents").Scan(&start, &resolution); err != nil {
 		t.Fatal(err)
 	}
-	if start != first.StartedAt.UnixMilli() || resolution.Valid {
+	if start != first.StartedAt.UnixMicro() || resolution.Valid {
 		t.Fatalf("remaining incident = (%d, %+v), want original unresolved incident", start, resolution)
 	}
 }
@@ -402,7 +457,7 @@ func TestIncidentStoreAllowsDifferentServicesToBeOpen(t *testing.T) {
 		}
 	}
 	var openCount int
-	if err := db.QueryRow("SELECT COUNT(*) FROM incidents WHERE resolved_at_ms IS NULL").Scan(&openCount); err != nil {
+	if err := db.QueryRow("SELECT COUNT(*) FROM incidents WHERE resolved_at_us IS NULL").Scan(&openCount); err != nil {
 		t.Fatal(err)
 	}
 	if openCount != 2 {
@@ -441,7 +496,7 @@ func TestIncidentStoreResolveMatchesExactOpenIncident(t *testing.T) {
 		}
 	}
 	var unresolved int
-	if err := db.QueryRow("SELECT COUNT(*) FROM incidents WHERE resolved_at_ms IS NULL").Scan(&unresolved); err != nil {
+	if err := db.QueryRow("SELECT COUNT(*) FROM incidents WHERE resolved_at_us IS NULL").Scan(&unresolved); err != nil {
 		t.Fatal(err)
 	}
 	if unresolved != 2 {
@@ -461,12 +516,12 @@ func TestIncidentStoreResolveMatchesExactOpenIncident(t *testing.T) {
 		{second, &secondResolution},
 		{other, &otherResolution},
 	} {
-		if err := db.QueryRow("SELECT resolved_at_ms FROM incidents WHERE service_id = ? AND started_at_ms = ?", tc.value.ServiceID, tc.value.StartedAt.UnixMilli()).Scan(tc.got); err != nil {
+		if err := db.QueryRow("SELECT resolved_at_us FROM incidents WHERE service_id = ? AND started_at_us = ?", tc.value.ServiceID, tc.value.StartedAt.UnixMicro()).Scan(tc.got); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if !firstResolution.Valid || firstResolution.Int64 != firstResolvedAt.UnixMilli() ||
-		!secondResolution.Valid || secondResolution.Int64 != resolvedAt.UnixMilli() || otherResolution.Valid {
+	if !firstResolution.Valid || firstResolution.Int64 != firstResolvedAt.UnixMicro() ||
+		!secondResolution.Valid || secondResolution.Int64 != resolvedAt.UnixMicro() || otherResolution.Valid {
 		t.Fatalf("resolutions = (%+v, %+v, %+v), want first and second resolved, other open", firstResolution, secondResolution, otherResolution)
 	}
 }
@@ -554,7 +609,7 @@ func TestIncidentStoreResolveRejectsInvalidValues(t *testing.T) {
 				t.Fatalf("Resolve() error = %v, want %q", err, tc.want)
 			}
 			var resolution sql.NullInt64
-			if err := db.QueryRow("SELECT resolved_at_ms FROM incidents").Scan(&resolution); err != nil {
+			if err := db.QueryRow("SELECT resolved_at_us FROM incidents").Scan(&resolution); err != nil {
 				t.Fatal(err)
 			}
 			if resolution.Valid {
@@ -573,19 +628,19 @@ func TestIncidentStoreAcceptsUnixEpoch(t *testing.T) {
 		t.Fatalf("Open() at Unix epoch: %v", err)
 	}
 	var storedStart int64
-	if err := db.QueryRow("SELECT started_at_ms FROM incidents").Scan(&storedStart); err != nil {
+	if err := db.QueryRow("SELECT started_at_us FROM incidents").Scan(&storedStart); err != nil {
 		t.Fatal(err)
 	}
 	if storedStart != 0 {
-		t.Fatalf("started_at_ms = %d, want 0", storedStart)
+		t.Fatalf("started_at_us = %d, want 0", storedStart)
 	}
 }
 
 func TestIncidentSchemaRejectsInvalidResolutionOrder(t *testing.T) {
-	for _, resolvedAtMS := range []int64{999, 1000} {
-		t.Run(time.UnixMilli(resolvedAtMS).Format(time.RFC3339Nano), func(t *testing.T) {
+	for _, resolvedAtUS := range []int64{999, 1000} {
+		t.Run(time.UnixMicro(resolvedAtUS).Format(time.RFC3339Nano), func(t *testing.T) {
 			db := openIncidentTestDB(t)
-			if _, err := db.Exec("INSERT INTO incidents (service_id, started_at_ms, resolved_at_ms) VALUES (?, ?, ?)", "github", 1000, resolvedAtMS); err == nil {
+			if _, err := db.Exec("INSERT INTO incidents (service_id, started_at_us, resolved_at_us) VALUES (?, ?, ?)", "github", 1000, resolvedAtUS); err == nil {
 				t.Fatal("direct INSERT succeeded, want CHECK constraint error")
 			}
 			assertIncidentCount(t, db, 0)
@@ -593,7 +648,7 @@ func TestIncidentSchemaRejectsInvalidResolutionOrder(t *testing.T) {
 	}
 }
 
-func TestIncidentStoreSurfacesMillisecondPrecisionCollision(t *testing.T) {
+func TestIncidentStoreAllowsResolutionWithinSameMillisecondAtDifferentMicrosecond(t *testing.T) {
 	db := openIncidentTestDB(t)
 	store := NewIncidentStore(db)
 	base := time.Unix(1_700_000_000, 0)
@@ -602,15 +657,40 @@ func TestIncidentStoreSurfacesMillisecondPrecisionCollision(t *testing.T) {
 		t.Fatal(err)
 	}
 	resolvedAt := base.Add(900 * time.Microsecond)
-	if !resolvedAt.After(value.StartedAt) || resolvedAt.UnixMilli() != value.StartedAt.UnixMilli() {
-		t.Fatal("test timestamps must be ordered in Go but equal in stored milliseconds")
+	if !resolvedAt.After(value.StartedAt) || resolvedAt.UnixMilli() != value.StartedAt.UnixMilli() || resolvedAt.UnixMicro() == value.StartedAt.UnixMicro() {
+		t.Fatal("test timestamps must be ordered in the same millisecond but different microseconds")
+	}
+	value.ResolvedAt = &resolvedAt
+	if err := store.Resolve(context.Background(), value); err != nil {
+		t.Fatalf("Resolve() within one millisecond: %v", err)
+	}
+	var resolution sql.NullInt64
+	if err := db.QueryRow("SELECT resolved_at_us FROM incidents").Scan(&resolution); err != nil {
+		t.Fatal(err)
+	}
+	if !resolution.Valid || resolution.Int64 != resolvedAt.UnixMicro() {
+		t.Fatalf("stored resolution = %+v, want %d", resolution, resolvedAt.UnixMicro())
+	}
+}
+
+func TestIncidentStoreSurfacesMicrosecondPrecisionCollision(t *testing.T) {
+	db := openIncidentTestDB(t)
+	store := NewIncidentStore(db)
+	base := time.Unix(1_700_000_000, 0)
+	value := incident.Incident{ServiceID: "github", StartedAt: base.Add(100 * time.Nanosecond)}
+	if err := store.Open(context.Background(), value); err != nil {
+		t.Fatal(err)
+	}
+	resolvedAt := base.Add(900 * time.Nanosecond)
+	if !resolvedAt.After(value.StartedAt) || resolvedAt.UnixMicro() != value.StartedAt.UnixMicro() {
+		t.Fatal("test timestamps must be ordered in Go but equal in stored microseconds")
 	}
 	value.ResolvedAt = &resolvedAt
 	if err := store.Resolve(context.Background(), value); err == nil {
-		t.Fatal("Resolve() succeeded despite equal stored milliseconds")
+		t.Fatal("Resolve() succeeded despite equal stored microseconds")
 	}
 	var resolution sql.NullInt64
-	if err := db.QueryRow("SELECT resolved_at_ms FROM incidents").Scan(&resolution); err != nil {
+	if err := db.QueryRow("SELECT resolved_at_us FROM incidents").Scan(&resolution); err != nil {
 		t.Fatal(err)
 	}
 	if resolution.Valid {
@@ -637,7 +717,7 @@ func TestIncidentStoreRespectsCanceledContext(t *testing.T) {
 		t.Fatalf("Resolve() error = %v, want context.Canceled", err)
 	}
 	var resolution sql.NullInt64
-	if err := db.QueryRow("SELECT resolved_at_ms FROM incidents").Scan(&resolution); err != nil {
+	if err := db.QueryRow("SELECT resolved_at_us FROM incidents").Scan(&resolution); err != nil {
 		t.Fatal(err)
 	}
 	if resolution.Valid {
@@ -706,12 +786,12 @@ func validIncident() incident.Incident {
 	return incident.Incident{ServiceID: "github", StartedAt: time.Unix(1_700_000_000, 0)}
 }
 
-func insertStoredIncident(t *testing.T, db *sql.DB, serviceID string, startedAtMS int64, resolvedAtMS *int64) {
+func insertStoredIncident(t *testing.T, db *sql.DB, serviceID string, startedAtUS int64, resolvedAtUS *int64) {
 	t.Helper()
 	if _, err := db.Exec(`
-		INSERT INTO incidents (service_id, started_at_ms, resolved_at_ms)
+		INSERT INTO incidents (service_id, started_at_us, resolved_at_us)
 		VALUES (?, ?, ?)
-	`, serviceID, startedAtMS, resolvedAtMS); err != nil {
+	`, serviceID, startedAtUS, resolvedAtUS); err != nil {
 		t.Fatalf("insert incident %q: %v", serviceID, err)
 	}
 }
