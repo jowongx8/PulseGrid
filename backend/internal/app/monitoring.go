@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jowongx8/backend/internal/event"
+	"github.com/jowongx8/backend/internal/incident"
 	"github.com/jowongx8/backend/internal/monitoring"
 	"github.com/jowongx8/backend/internal/service"
 	"github.com/jowongx8/backend/internal/status"
@@ -20,6 +22,11 @@ type CheckResultWriter interface {
 	Save(context.Context, monitoring.CheckResult) error
 }
 
+// EventPublisher publishes meaningful application state changes.
+type EventPublisher interface {
+	Publish(event.Event) error
+}
+
 // MonitoringRuntime coordinates one monitoring pipeline.
 type MonitoringRuntime struct {
 	pool      *monitoring.WorkerPool
@@ -27,6 +34,7 @@ type MonitoringRuntime struct {
 	tracker   *status.Tracker
 	writer    CheckResultWriter
 	incidents *IncidentProcessor
+	publisher EventPublisher
 	submitter *outstandingSubmitter
 	started   atomic.Bool
 }
@@ -42,6 +50,7 @@ func NewMonitoringRuntime(
 	checker monitoring.Checker,
 	writer CheckResultWriter,
 	incidents *IncidentProcessor,
+	publisher EventPublisher,
 	interval time.Duration,
 	workerCount int,
 	queueCapacity int,
@@ -51,6 +60,9 @@ func NewMonitoringRuntime(
 	}
 	if incidents == nil {
 		return nil, errors.New("incident processor is required")
+	}
+	if publisher == nil {
+		return nil, errors.New("event publisher is required")
 	}
 
 	snapshot := append([]service.Service(nil), services...)
@@ -86,6 +98,7 @@ func NewMonitoringRuntime(
 		tracker:   tracker,
 		writer:    writer,
 		incidents: incidents,
+		publisher: publisher,
 		submitter: submitter,
 	}, nil
 }
@@ -109,7 +122,7 @@ func (r *MonitoringRuntime) Run(ctx context.Context) error {
 	}
 	exits := make(chan exit, 3)
 	go func() {
-		exits <- exit{component: "result consumer", err: processResults(runCtx, r.pool.Results(), r.writer, r.tracker, r.incidents, r.submitter)}
+		exits <- exit{component: "result consumer", err: processResults(runCtx, r.pool.Results(), r.writer, r.tracker, r.incidents, r.publisher, r.submitter)}
 	}()
 	go func() {
 		r.pool.Run(runCtx)
@@ -172,6 +185,7 @@ func processResults(
 	writer CheckResultWriter,
 	tracker *status.Tracker,
 	incidents *IncidentProcessor,
+	publisher EventPublisher,
 	submitter *outstandingSubmitter,
 ) error {
 	for {
@@ -196,13 +210,51 @@ func processResults(
 			if err != nil {
 				return fmt.Errorf("apply observation for service %q: %w", result.ServiceID, err)
 			}
-			if err := incidents.Process(ctx, update); err != nil {
+			transition, err := incidents.Process(ctx, update)
+			if err != nil {
 				if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(err, ctxErr) {
 					return nil
 				}
 				return fmt.Errorf("process incident update for service %q: %w", result.ServiceID, err)
 			}
+			if err := publishEvents(publisher, update, transition); err != nil {
+				return err
+			}
 			submitter.complete(result.ServiceID)
 		}
 	}
+}
+
+func publishEvents(publisher EventPublisher, update status.Update, transition *incident.Incident) error {
+	if update.Applied && update.Changed {
+		if err := publisher.Publish(event.StatusChanged{
+			ServiceID:     update.ServiceID,
+			State:         update.Current,
+			LastCheckedAt: update.ObservedAt,
+		}); err != nil {
+			return fmt.Errorf("publish status changed event for service %q: %w", update.ServiceID, err)
+		}
+	}
+
+	if transition == nil {
+		return nil
+	}
+	if transition.ResolvedAt == nil {
+		if err := publisher.Publish(event.IncidentOpened{
+			ServiceID: transition.ServiceID,
+			StartedAt: transition.StartedAt,
+		}); err != nil {
+			return fmt.Errorf("publish incident opened event for service %q: %w", transition.ServiceID, err)
+		}
+		return nil
+	}
+
+	if err := publisher.Publish(event.IncidentResolved{
+		ServiceID:  transition.ServiceID,
+		StartedAt:  transition.StartedAt,
+		ResolvedAt: *transition.ResolvedAt,
+	}); err != nil {
+		return fmt.Errorf("publish incident resolved event for service %q: %w", transition.ServiceID, err)
+	}
+	return nil
 }

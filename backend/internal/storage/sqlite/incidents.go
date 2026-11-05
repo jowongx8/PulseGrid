@@ -59,10 +59,10 @@ func (s *IncidentStore) ListFeed(ctx context.Context, target int) (active []inci
 
 func listActiveIncidents(ctx context.Context, tx *sql.Tx) ([]incident.Incident, error) {
 	rows, err := tx.QueryContext(ctx, `
-		SELECT service_id, started_at_ms
+		SELECT service_id, started_at_us
 		FROM incidents
-		WHERE resolved_at_ms IS NULL
-		ORDER BY started_at_ms DESC, id DESC
+		WHERE resolved_at_us IS NULL
+		ORDER BY started_at_us DESC, id DESC
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("query active incident feed: %w", err)
@@ -72,13 +72,13 @@ func listActiveIncidents(ctx context.Context, tx *sql.Tx) ([]incident.Incident, 
 	values := make([]incident.Incident, 0)
 	for rows.Next() {
 		var serviceID string
-		var startedAtMS int64
-		if err := rows.Scan(&serviceID, &startedAtMS); err != nil {
+		var startedAtUS int64
+		if err := rows.Scan(&serviceID, &startedAtUS); err != nil {
 			return nil, fmt.Errorf("scan active incident feed: %w", err)
 		}
 		values = append(values, incident.Incident{
 			ServiceID: serviceID,
-			StartedAt: time.UnixMilli(startedAtMS),
+			StartedAt: time.UnixMicro(startedAtUS).UTC(),
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -89,10 +89,10 @@ func listActiveIncidents(ctx context.Context, tx *sql.Tx) ([]incident.Incident, 
 
 func listResolvedIncidents(ctx context.Context, tx *sql.Tx, limit int) ([]incident.Incident, error) {
 	rows, err := tx.QueryContext(ctx, `
-		SELECT service_id, started_at_ms, resolved_at_ms
+		SELECT service_id, started_at_us, resolved_at_us
 		FROM incidents
-		WHERE resolved_at_ms IS NOT NULL
-		ORDER BY resolved_at_ms DESC, id DESC
+		WHERE resolved_at_us IS NOT NULL
+		ORDER BY resolved_at_us DESC, id DESC
 		LIMIT ?
 	`, limit)
 	if err != nil {
@@ -103,14 +103,14 @@ func listResolvedIncidents(ctx context.Context, tx *sql.Tx, limit int) ([]incide
 	values := make([]incident.Incident, 0, limit)
 	for rows.Next() {
 		var serviceID string
-		var startedAtMS, resolvedAtMS int64
-		if err := rows.Scan(&serviceID, &startedAtMS, &resolvedAtMS); err != nil {
+		var startedAtUS, resolvedAtUS int64
+		if err := rows.Scan(&serviceID, &startedAtUS, &resolvedAtUS); err != nil {
 			return nil, fmt.Errorf("scan resolved incident feed: %w", err)
 		}
-		resolvedAt := time.UnixMilli(resolvedAtMS)
+		resolvedAt := time.UnixMicro(resolvedAtUS).UTC()
 		values = append(values, incident.Incident{
 			ServiceID:  serviceID,
-			StartedAt:  time.UnixMilli(startedAtMS),
+			StartedAt:  time.UnixMicro(startedAtUS).UTC(),
 			ResolvedAt: &resolvedAt,
 		})
 	}
@@ -122,9 +122,9 @@ func listResolvedIncidents(ctx context.Context, tx *sql.Tx, limit int) ([]incide
 
 func (s *IncidentStore) ListOpen(ctx context.Context) ([]incident.Incident, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT service_id, started_at_ms
+		SELECT service_id, started_at_us
 		FROM incidents
-		WHERE resolved_at_ms IS NULL
+		WHERE resolved_at_us IS NULL
 		ORDER BY service_id
 	`)
 	if err != nil {
@@ -135,13 +135,13 @@ func (s *IncidentStore) ListOpen(ctx context.Context) ([]incident.Incident, erro
 	values := make([]incident.Incident, 0)
 	for rows.Next() {
 		var serviceID string
-		var startedAtMS int64
-		if err := rows.Scan(&serviceID, &startedAtMS); err != nil {
+		var startedAtUS int64
+		if err := rows.Scan(&serviceID, &startedAtUS); err != nil {
 			return nil, fmt.Errorf("scan open incident: %w", err)
 		}
 		values = append(values, incident.Incident{
 			ServiceID: serviceID,
-			StartedAt: time.UnixMilli(startedAtMS),
+			StartedAt: time.UnixMicro(startedAtUS).UTC(),
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -162,9 +162,9 @@ func (s *IncidentStore) Open(ctx context.Context, value incident.Incident) error
 	}
 
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO incidents (service_id, started_at_ms, resolved_at_ms)
+		INSERT INTO incidents (service_id, started_at_us, resolved_at_us)
 		VALUES (?, ?, NULL)
-	`, value.ServiceID, value.StartedAt.UnixMilli())
+	`, value.ServiceID, value.StartedAt.UnixMicro())
 	if err != nil {
 		return fmt.Errorf("open incident for service %q: %w", value.ServiceID, err)
 	}
@@ -185,15 +185,15 @@ func (s *IncidentStore) Resolve(ctx context.Context, value incident.Incident) er
 		return fmt.Errorf("resolve incident for service %q: resolution time must be after start time", value.ServiceID)
 	}
 
-	// Times in the same stored millisecond are left unchanged; the table CHECK
+	// Times in the same stored microsecond are left unchanged; the table CHECK
 	// rejects a resolution that cannot be represented after its start.
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE incidents
-		SET resolved_at_ms = ?
+		SET resolved_at_us = ?
 		WHERE service_id = ?
-		  AND started_at_ms = ?
-		  AND resolved_at_ms IS NULL
-	`, value.ResolvedAt.UnixMilli(), value.ServiceID, value.StartedAt.UnixMilli())
+		  AND started_at_us = ?
+		  AND resolved_at_us IS NULL
+	`, value.ResolvedAt.UnixMicro(), value.ServiceID, value.StartedAt.UnixMicro())
 	if err != nil {
 		return fmt.Errorf("resolve incident for service %q: %w", value.ServiceID, err)
 	}
@@ -202,7 +202,7 @@ func (s *IncidentStore) Resolve(ctx context.Context, value incident.Incident) er
 		return fmt.Errorf("resolve incident for service %q: count updated rows: %w", value.ServiceID, err)
 	}
 	if count == 0 {
-		return fmt.Errorf("resolve incident for service %q: no matching unresolved incident started at %d", value.ServiceID, value.StartedAt.UnixMilli())
+		return fmt.Errorf("resolve incident for service %q: no matching unresolved incident started at %d", value.ServiceID, value.StartedAt.UnixMicro())
 	}
 	if count != 1 {
 		return fmt.Errorf("resolve incident for service %q: updated %d unresolved incidents, want 1", value.ServiceID, count)

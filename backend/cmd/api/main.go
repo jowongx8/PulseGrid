@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/jowongx8/backend/internal/app"
 	"github.com/jowongx8/backend/internal/config"
+	"github.com/jowongx8/backend/internal/event"
 	"github.com/jowongx8/backend/internal/httpapi"
 	"github.com/jowongx8/backend/internal/incident"
 	"github.com/jowongx8/backend/internal/monitoring"
@@ -60,11 +62,16 @@ func run(ctx context.Context, logger *slog.Logger) (retErr error) {
 		return fmt.Errorf("restore open incidents: %w", err)
 	}
 	incidentProcessor := app.NewIncidentProcessor(incidentLifecycle, incidentStore)
+	eventBroker, err := event.NewBroker(event.DefaultSubscriberBufferSize)
+	if err != nil {
+		return fmt.Errorf("create event broker: %w", err)
+	}
+	defer eventBroker.Close()
 
 	services := service.Catalogue()
 	checker := monitoring.NewHTTPChecker()
 	writer := sqlite.NewCheckResultStore(db)
-	runtime, err := app.NewMonitoringRuntime(services, checker, writer, incidentProcessor, monitorInterval, monitorWorkers, monitorQueueCapacity)
+	runtime, err := app.NewMonitoringRuntime(services, checker, writer, incidentProcessor, eventBroker, monitorInterval, monitorWorkers, monitorQueueCapacity)
 	if err != nil {
 		return fmt.Errorf("create monitoring runtime: %w", err)
 	}
@@ -79,7 +86,7 @@ func run(ctx context.Context, logger *slog.Logger) (retErr error) {
 
 	server := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.Port),
-		Handler:           httpapi.NewRouter(currentStatusQuery, incidentsQuery),
+		Handler:           httpapi.NewRouter(currentStatusQuery, incidentsQuery, eventBroker),
 		ReadHeaderTimeout: readHeaderTimeout,
 	}
 
@@ -94,6 +101,9 @@ func runApplication(
 ) error {
 	appCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	server.BaseContext = func(net.Listener) context.Context {
+		return appCtx
+	}
 
 	var shutdownStarted atomic.Bool
 	serverDone := make(chan error, 1)

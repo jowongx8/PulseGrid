@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jowongx8/backend/internal/incident"
 	"github.com/jowongx8/backend/internal/status"
@@ -43,22 +44,45 @@ func NewIncidentProcessor(lifecycle *incident.Lifecycle, writer IncidentWriter) 
 	return &IncidentProcessor{lifecycle: lifecycle, writer: writer}
 }
 
-func (p *IncidentProcessor) Process(ctx context.Context, update status.Update) error {
+func (p *IncidentProcessor) Process(ctx context.Context, update status.Update) (*incident.Incident, error) {
 	value, err := p.lifecycle.Apply(update)
 	if err != nil {
-		return fmt.Errorf("apply incident update for service %q: %w", update.ServiceID, err)
+		return nil, fmt.Errorf("apply incident update for service %q: %w", update.ServiceID, err)
 	}
 	if value == nil {
-		return nil
+		return nil, nil
 	}
-	if value.ResolvedAt == nil {
-		if err := p.writer.Open(ctx, *value); err != nil {
-			return fmt.Errorf("open incident for service %q: %w", value.ServiceID, err)
+
+	transition := canonicalIncident(*value)
+	if transition.ResolvedAt == nil {
+		if err := p.writer.Open(ctx, copyIncident(transition)); err != nil {
+			return nil, fmt.Errorf("open incident for service %q: %w", transition.ServiceID, err)
 		}
-		return nil
+		return &transition, nil
 	}
-	if err := p.writer.Resolve(ctx, *value); err != nil {
-		return fmt.Errorf("resolve incident for service %q: %w", value.ServiceID, err)
+	if err := p.writer.Resolve(ctx, copyIncident(transition)); err != nil {
+		return nil, fmt.Errorf("resolve incident for service %q: %w", transition.ServiceID, err)
 	}
-	return nil
+	return &transition, nil
+}
+
+func copyIncident(value incident.Incident) incident.Incident {
+	if value.ResolvedAt != nil {
+		resolvedAt := *value.ResolvedAt
+		value.ResolvedAt = &resolvedAt
+	}
+	return value
+}
+
+func canonicalIncident(value incident.Incident) incident.Incident {
+	value.StartedAt = canonicalIncidentTime(value.StartedAt)
+	if value.ResolvedAt != nil {
+		resolvedAt := canonicalIncidentTime(*value.ResolvedAt)
+		value.ResolvedAt = &resolvedAt
+	}
+	return value
+}
+
+func canonicalIncidentTime(value time.Time) time.Time {
+	return time.UnixMicro(value.UnixMicro()).UTC()
 }

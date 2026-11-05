@@ -82,7 +82,7 @@ func TestProcessResultsUsesTrackerTransitionsForIncidents(t *testing.T) {
 		results <- monitoring.CheckResult{ServiceID: "example", CheckedAt: base.Add(time.Duration(index) * time.Second), StatusCode: code}
 	}
 	guard := &outstandingSubmitter{outstanding: map[string]struct{}{"example": {}}}
-	if err := processResults(ctx, results, writer, tracker, processor, guard); err != nil {
+	if err := processResults(ctx, results, writer, tracker, processor, successfulEventPublisher(), guard); err != nil {
 		t.Fatal(err)
 	}
 	if want := []string{"save", "save", "save", "save", "open", "save", "save", "resolve"}; !reflect.DeepEqual(events, want) {
@@ -138,7 +138,7 @@ func TestProcessResultsKeepsServiceOutstandingDuringIncidentWrite(t *testing.T) 
 	}()
 	go func() {
 		defer close(finished)
-		done <- processResults(context.Background(), results, checkResultWriterFunc(func(context.Context, monitoring.CheckResult) error { return nil }), tracker, processor, guard)
+		done <- processResults(context.Background(), results, checkResultWriterFunc(func(context.Context, monitoring.CheckResult) error { return nil }), tracker, processor, successfulEventPublisher(), guard)
 	}()
 	waitSignal(t, started)
 	if err := guard.Submit(context.Background(), svc); err != nil {
@@ -183,7 +183,7 @@ func TestMonitoringRuntimeFailsOnIncidentOpenAndJoinsWorkers(t *testing.T) {
 		[]service.Service{{ID: "primary", Enabled: true}, {ID: "sibling", Enabled: true}},
 		checker,
 		checkResultWriterFunc(func(context.Context, monitoring.CheckResult) error { saves.Add(1); return nil }),
-		processor, time.Hour, 2, 2,
+		processor, successfulEventPublisher(), time.Hour, 2, 2,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -241,7 +241,7 @@ func TestProcessResultsStopsOnIncidentResolveFailure(t *testing.T) {
 	for index := range 3 {
 		results <- monitoring.CheckResult{ServiceID: "example", CheckedAt: base.Add(time.Duration(index+3) * time.Second), StatusCode: 200}
 	}
-	err := processResults(context.Background(), results, writer, tracker, processor, guard)
+	err := processResults(context.Background(), results, writer, tracker, processor, successfulEventPublisher(), guard)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("processResults() error = %v, want Resolve failure", err)
 	}
@@ -279,7 +279,7 @@ func TestProcessResultsStopsOnIncidentLifecycleError(t *testing.T) {
 		results <- monitoring.CheckResult{ServiceID: "example", CheckedAt: base.Add(time.Duration(index+3) * time.Second), StatusCode: 200}
 	}
 	guard := &outstandingSubmitter{outstanding: map[string]struct{}{"example": {}}}
-	err := processResults(context.Background(), results, writer, tracker, processor, guard)
+	err := processResults(context.Background(), results, writer, tracker, processor, successfulEventPublisher(), guard)
 	if !errors.Is(err, incident.ErrNoActiveIncident) {
 		t.Fatalf("processResults() error = %v, want incident lifecycle failure", err)
 	}
@@ -329,7 +329,7 @@ func TestProcessResultsClassifiesIncidentWriteErrorsDuringShutdown(t *testing.T)
 			guard := &outstandingSubmitter{outstanding: map[string]struct{}{"example": {}}}
 			results := make(chan monitoring.CheckResult, 1)
 			results <- monitoring.CheckResult{ServiceID: "example", CheckedAt: base.Add(2 * time.Second), StatusCode: 503}
-			err := processResults(ctx, results, checkResultWriterFunc(func(context.Context, monitoring.CheckResult) error { return nil }), tracker, processor, guard)
+			err := processResults(ctx, results, checkResultWriterFunc(func(context.Context, monitoring.CheckResult) error { return nil }), tracker, processor, successfulEventPublisher(), guard)
 			if tc.wantError == nil && err != nil || tc.wantError != nil && !errors.Is(err, tc.wantError) {
 				t.Fatalf("processResults() error = %v, want %v", err, tc.wantError)
 			}
@@ -372,7 +372,7 @@ func TestMonitoringRuntimeClassifiesIncidentWriteDuringShutdown(t *testing.T) {
 					return monitoring.CheckResult{ServiceID: "example", CheckedAt: base.Add(2 * time.Second), StatusCode: 503}
 				}),
 				checkResultWriterFunc(func(context.Context, monitoring.CheckResult) error { return nil }),
-				processor, time.Hour, 1, 1,
+				processor, successfulEventPublisher(), time.Hour, 1, 1,
 			)
 			if err != nil {
 				t.Fatal(err)
@@ -412,7 +412,7 @@ func TestProcessResultsFinishesAcceptedIncidentAfterSaveCancelsContext(t *testin
 	results := make(chan monitoring.CheckResult, 1)
 	results <- monitoring.CheckResult{ServiceID: "example", CheckedAt: base.Add(2 * time.Second), StatusCode: 503}
 	writer := checkResultWriterFunc(func(context.Context, monitoring.CheckResult) error { cancel(); return nil })
-	if err := processResults(ctx, results, writer, tracker, processor, guard); err != nil {
+	if err := processResults(ctx, results, writer, tracker, processor, successfulEventPublisher(), guard); err != nil {
 		t.Fatal(err)
 	}
 	if opened.ServiceID != "example" || !opened.StartedAt.Equal(base.Add(2*time.Second)) {
