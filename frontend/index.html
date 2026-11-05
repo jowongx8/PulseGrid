@@ -3,6 +3,29 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f7f7f8" />
+    <script>
+      // Apply before styles and React load; mirror ThemeProvider's resolution.
+      (() => {
+        let saved
+        try {
+          saved = localStorage.getItem('pulsegrid-theme')
+        } catch {
+          // Fall back to the system preference when storage is unavailable.
+        }
+        const theme =
+          saved === 'light' || saved === 'dark'
+            ? saved
+            : window.matchMedia('(prefers-color-scheme: dark)').matches
+              ? 'dark'
+              : 'light'
+        document.documentElement.classList.add(theme)
+        document.querySelector('meta[name="theme-color"]').setAttribute(
+          'content',
+          theme === 'dark' ? '#1a1b1e' : '#f7f7f8',
+        )
+      })()
+    </script>
     <title>PulseGrid</title>
   </head>
   <body>
