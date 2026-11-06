@@ -1,0 +1,130 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+# Replace older PR runs; keep each push's distinct change range independently validated.
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+    steps:
+      - name: Check PR file-list limit
+        if: github.event_name == 'pull_request'
+        env:
+          PR_CHANGED_FILES: ${{ github.event.pull_request.changed_files }}
+        shell: bash
+        run: |
+          # GitHub's PR-files API returns at most 3,000 files. Reject a truncated diff.
+          if [[ ! "$PR_CHANGED_FILES" =~ ^[0-9]+$ ]] || (( PR_CHANGED_FILES > 3000 )); then
+            echo '::error::Cannot reliably classify this PR within the 3,000-file API limit.'
+            exit 1
+          fi
+
+      - name: Check out push history
+        if: github.event_name == 'push'
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Detect application changes
+        id: filter
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d
+        with:
+          # PRs use the complete PR-files API; pushes compare event.before to this branch.
+          base: ${{ github.event_name == 'push' && github.ref || '' }}
+          filters: |
+            backend:
+              - 'backend/**'
+              - '.github/workflows/backend-ci.yml'
+              - '.github/workflows/pr-ci.yml'
+            frontend:
+              - 'frontend/**'
+              - '.github/workflows/frontend-ci.yml'
+              - '.github/workflows/pr-ci.yml'
+
+  backend:
+    needs: changes
+    if: needs.changes.result == 'success' && needs.changes.outputs.backend == 'true'
+    uses: ./.github/workflows/backend-ci.yml
+
+  frontend:
+    needs: changes
+    if: needs.changes.result == 'success' && needs.changes.outputs.frontend == 'true'
+    uses: ./.github/workflows/frontend-ci.yml
+
+  gate:
+    name: CI Gate
+    needs: [changes, backend, frontend]
+    if: ${{ always() }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Evaluate required validation
+        env:
+          DETECTION_RESULT: ${{ needs.changes.result }}
+          BACKEND_REQUIRED: ${{ needs.changes.outputs.backend }}
+          FRONTEND_REQUIRED: ${{ needs.changes.outputs.frontend }}
+          BACKEND_RESULT: ${{ needs.backend.result }}
+          FRONTEND_RESULT: ${{ needs.frontend.result }}
+          BACKEND_VALIDATION_RESULT: ${{ needs.backend.outputs.validation_result }}
+          FRONTEND_VALIDATION_RESULT: ${{ needs.frontend.outputs.validation_result }}
+        shell: bash
+        run: |
+          if [[ "$DETECTION_RESULT" != 'success' ]]; then
+            echo '::error::Change detection did not succeed.'
+            exit 1
+          fi
+
+          check_validation() {
+            local application="$1" required="$2" result="$3" validation="$4"
+            printf '%s: required=%s, job=%s, validation=%s\n' \
+              "$application" "$required" "$result" "$validation"
+            case "$required" in
+              true)
+                if [[ "$result" != 'success' || "$validation" != 'success' ]]; then
+                  echo "::error::$application validation was required but did not succeed."
+                  return 1
+                fi
+                ;;
+              false)
+                if [[ "$result" != 'skipped' ]]; then
+                  echo "::error::$application was not required but was not intentionally skipped."
+                  return 1
+                fi
+                ;;
+              *)
+                echo "::error::$application applicability output is missing or invalid."
+                return 1
+                ;;
+            esac
+          }
+
+          failed=0
+          check_validation 'Backend' "$BACKEND_REQUIRED" "$BACKEND_RESULT" \
+            "$BACKEND_VALIDATION_RESULT" || failed=1
+          check_validation 'Frontend' "$FRONTEND_REQUIRED" "$FRONTEND_RESULT" \
+            "$FRONTEND_VALIDATION_RESULT" || failed=1
+          exit "$failed"
