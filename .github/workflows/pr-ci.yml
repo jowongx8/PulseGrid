@@ -50,7 +50,7 @@ jobs:
 
       - name: Detect application changes
         id: filter
-        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d
         with:
           # PRs use the complete PR-files API; pushes compare event.before to this branch.
           base: ${{ github.event_name == 'push' && github.ref || '' }}
@@ -59,12 +59,10 @@ jobs:
               - 'backend/**'
               - '.github/workflows/backend-ci.yml'
               - '.github/workflows/pr-ci.yml'
-              - '.github/actionlint.yaml'
             frontend:
               - 'frontend/**'
               - '.github/workflows/frontend-ci.yml'
               - '.github/workflows/pr-ci.yml'
-              - '.github/actionlint.yaml'
 
   backend:
     needs: changes

@@ -6,19 +6,6 @@ on:
       validation_result:
         description: Result of the final frontend validation step
         value: ${{ jobs.frontend.outputs.validation_result }}
-  # Retain standalone triggers until CI Gate is verified and required on GitHub.
-  pull_request:
-    branches:
-      - main
-    paths:
-      - 'frontend/**'
-      - '.github/workflows/frontend-ci.yml'
-  push:
-    branches:
-      - main
-    paths:
-      - 'frontend/**'
-      - '.github/workflows/frontend-ci.yml'
 
 permissions:
   contents: read

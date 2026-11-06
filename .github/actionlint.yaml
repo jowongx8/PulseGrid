@@ -1,5 +1,0 @@
-# GitHub hosts this image; actionlint v1.7.12's built-in runner list predates it.
-# This extends local validation only; workflows still use GitHub-hosted runners.
-self-hosted-runner:
-  labels:
-    - ubuntu-26.04
