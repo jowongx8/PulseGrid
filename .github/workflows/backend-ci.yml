@@ -1,6 +1,12 @@
 name: Backend CI
 
 on:
+  workflow_call:
+    outputs:
+      validation_result:
+        description: Result of the final backend validation step
+        value: ${{ jobs.backend.outputs.validation_result }}
+  # Retain standalone triggers until CI Gate is verified and required on GitHub.
   pull_request:
     branches:
       - main
@@ -17,14 +23,12 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   backend:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
+    outputs:
+      validation_result: ${{ steps.build.outcome }}
     defaults:
       run:
         working-directory: backend
@@ -32,6 +36,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@v7
@@ -62,4 +68,5 @@ jobs:
         run: go test -race ./...
 
       - name: Build
+        id: build
         run: go build ./...

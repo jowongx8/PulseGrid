@@ -1,6 +1,12 @@
 name: Frontend CI
 
 on:
+  workflow_call:
+    outputs:
+      validation_result:
+        description: Result of the final frontend validation step
+        value: ${{ jobs.frontend.outputs.validation_result }}
+  # Retain standalone triggers until CI Gate is verified and required on GitHub.
   pull_request:
     branches:
       - main
@@ -17,14 +23,12 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   frontend:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
+    outputs:
+      validation_result: ${{ steps.build.outcome }}
     defaults:
       run:
         working-directory: frontend
@@ -32,6 +36,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Set up Node.js
         uses: actions/setup-node@v7
@@ -53,4 +59,5 @@ jobs:
         run: npm run test
 
       - name: Build
+        id: build
         run: npm run build
