@@ -9,6 +9,7 @@
 
 # Local agent instructions
 AGENTS.md
+DESIGN.md
 
 # Go build outputs
 /backend/api
@@ -20,3 +21,13 @@ AGENTS.md
 # Go coverage
 coverage.out
 coverage.html
+
+# Frontend dependencies and build output
+node_modules/
+dist/
+
+# Frontend test coverage
+coverage/
+
+# npm logs
+npm-debug.log*
