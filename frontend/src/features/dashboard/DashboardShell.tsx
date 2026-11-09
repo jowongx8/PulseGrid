@@ -1,6 +1,7 @@
 import type { IncidentDTO, ServiceDTO } from '@/data/contracts'
 import { Navbar } from './Navbar'
 import { StatusSummary } from './StatusSummary'
+import { ServiceTreemap } from './treemap/ServiceTreemap'
 
 interface DashboardShellProps {
   services: readonly ServiceDTO[]
@@ -16,11 +17,7 @@ export function DashboardShell({ services, activeIncidents }: DashboardShellProp
         aria-label="Service map"
         className="relative min-h-0 min-w-0 flex-1 overflow-hidden"
       >
-        <div className="absolute inset-0 flex items-center justify-center p-2">
-          <p className="text-center text-xs text-muted-foreground">
-            Service map coming soon.
-          </p>
-        </div>
+        <ServiceTreemap services={services} />
       </main>
     </div>
   )
