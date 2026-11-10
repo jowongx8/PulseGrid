@@ -1,4 +1,7 @@
-import type { IncidentsResponse, ServiceCategory, ServiceState, StatusResponse } from '../contracts'
+import type {
+  IncidentOpenedEventPayload, IncidentResolvedEventPayload, IncidentsResponse,
+  ServiceCategory, ServiceState, StatusChangedEventPayload, StatusResponse,
+} from '../contracts'
 import { compareTimestamps } from '../timestamps'
 
 // These lookups validate the closed wire contract, independently of UI labels/order.
@@ -31,6 +34,11 @@ function requireString(value: unknown, path: string): asserts value is string {
   if (typeof value !== 'string' || value.trim().length === 0) invalid(path, 'a nonempty string')
 }
 
+function requireState(value: unknown, path: string): asserts value is ServiceState {
+  requireString(value, path)
+  if (!Object.hasOwn(states, value)) invalid(path, 'up, down or unknown')
+}
+
 function requireTimestamp(value: unknown, path: string): asserts value is string {
   requireString(value, path)
   // Go JSON emits RFC3339 with optional fractional seconds (up to nanoseconds).
@@ -57,10 +65,21 @@ export function validateStatusResponse(value: unknown): asserts value is StatusR
     requireString(service.websiteUrl, `${path}.websiteUrl`)
     if (typeof service.weight !== 'number' || !Number.isSafeInteger(service.weight) || service.weight <= 0) invalid(`${path}.weight`, 'a positive safe integer')
     requireObject(service.status, `${path}.status`)
-    requireString(service.status.state, `${path}.status.state`)
-    if (!Object.hasOwn(states, service.status.state)) invalid(`${path}.status.state`, 'up, down or unknown')
+    requireState(service.status.state, `${path}.status.state`)
     if (service.status.lastCheckedAt !== null) requireTimestamp(service.status.lastCheckedAt, `${path}.status.lastCheckedAt`)
   })
+}
+
+function requireIncident(value: unknown, path: string, resolved: boolean) {
+  requireObject(value, path)
+  requireString(value.serviceId, `${path}.serviceId`)
+  requireTimestamp(value.startedAt, `${path}.startedAt`)
+  if (resolved) {
+    requireTimestamp(value.resolvedAt, `${path}.resolvedAt`)
+    if (compareTimestamps(value.resolvedAt, value.startedAt) <= 0) invalid(`${path}.resolvedAt`, 'a timestamp after startedAt')
+  } else if (value.resolvedAt !== null) {
+    invalid(`${path}.resolvedAt`, 'null for an active incident')
+  }
 }
 
 export function validateIncidentsResponse(value: unknown): asserts value is IncidentsResponse {
@@ -68,16 +87,22 @@ export function validateIncidentsResponse(value: unknown): asserts value is Inci
   for (const group of ['active', 'resolved'] as const) {
     requireArray(value[group], group)
     value[group].forEach((incident, index) => {
-      const path = `${group}[${index}]`
-      requireObject(incident, path)
-      requireString(incident.serviceId, `${path}.serviceId`)
-      requireTimestamp(incident.startedAt, `${path}.startedAt`)
-      if (group === 'active') {
-        if (incident.resolvedAt !== null) invalid(`${path}.resolvedAt`, 'null for an active incident')
-      } else {
-        requireTimestamp(incident.resolvedAt, `${path}.resolvedAt`)
-        if (compareTimestamps(incident.resolvedAt, incident.startedAt) <= 0) invalid(`${path}.resolvedAt`, 'a timestamp after startedAt')
-      }
+      requireIncident(incident, `${group}[${index}]`, group === 'resolved')
     })
   }
+}
+
+export function validateStatusChangedEventPayload(value: unknown): asserts value is StatusChangedEventPayload {
+  requireObject(value, 'payload')
+  requireString(value.serviceId, 'payload.serviceId')
+  requireState(value.state, 'payload.state')
+  requireTimestamp(value.lastCheckedAt, 'payload.lastCheckedAt')
+}
+
+export function validateIncidentOpenedEventPayload(value: unknown): asserts value is IncidentOpenedEventPayload {
+  requireIncident(value, 'payload', false)
+}
+
+export function validateIncidentResolvedEventPayload(value: unknown): asserts value is IncidentResolvedEventPayload {
+  requireIncident(value, 'payload', true)
 }

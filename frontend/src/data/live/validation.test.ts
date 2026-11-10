@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import type { ServiceCategory } from '../contracts'
 import { incidentsResponseFixture, statusResponseFixture } from '../fixtures'
-import { validateIncidentsResponse, validateStatusResponse } from './validation'
+import {
+  validateIncidentOpenedEventPayload, validateIncidentResolvedEventPayload,
+  validateIncidentsResponse, validateStatusChangedEventPayload, validateStatusResponse,
+} from './validation'
 
 const service = statusResponseFixture.services[0]
 const active = incidentsResponseFixture.active[0]
@@ -136,5 +139,75 @@ describe('incident response validation', () => {
     validateIncidentsResponse(body)
     expect(body.active.map((incident) => `${incident.serviceId}|${incident.startedAt}`)).toEqual(identities)
     expect(body.active).toHaveLength(25)
+  })
+})
+
+describe('SSE payload validation', () => {
+  // Wire examples from backend/internal/httpapi/events_test.go include offsets
+  // and nanoseconds; the production incident path canonicalizes instants earlier.
+  const statusPayload = { serviceId: 'github', state: 'down', lastCheckedAt: '2026-09-22T15:00:00.123456789+10:00' }
+  const openedPayload = { serviceId: 'github', startedAt: '2026-09-22T15:00:00.123456789+10:00', resolvedAt: null }
+  const resolvedPayload = { ...openedPayload, resolvedAt: '2026-09-22T15:08:00.123456789+10:00' }
+  const contracts: { name: string; validate: (value: unknown) => void; payload: Record<string, unknown> }[] = [
+    { name: 'status.changed', validate: validateStatusChangedEventPayload, payload: statusPayload },
+    { name: 'incident.opened', validate: validateIncidentOpenedEventPayload, payload: openedPayload },
+    { name: 'incident.resolved', validate: validateIncidentResolvedEventPayload, payload: resolvedPayload },
+  ]
+
+  it.each(contracts)('accepts the Go $name payload and additional properties without mutation', ({ validate, payload }) => {
+    const body = Object.freeze({ ...payload, futureProperty: true })
+    const before = JSON.stringify(body)
+    expect(() => validate(body)).not.toThrow()
+    expect(JSON.stringify(body)).toBe(before)
+  })
+
+  it.each(contracts)('rejects non-objects and missing service IDs for $name', ({ validate, payload }) => {
+    for (const body of [null, [], 'invalid', true, 123, {}, { ...payload, serviceId: undefined }, { ...payload, serviceId: '' }, { ...payload, serviceId: 1 }]) {
+      expect(() => validate(body)).toThrow(TypeError)
+    }
+  })
+
+  it.each(['up', 'down', 'unknown'])('accepts status %s with a required observed timestamp', (state) => {
+    expect(() => validateStatusChangedEventPayload({ ...statusPayload, state })).not.toThrow()
+  })
+
+  it.each(['UP', 'degraded', '__proto__', null, undefined, 1])('rejects invalid SSE status %s', (state) => {
+    expect(() => validateStatusChangedEventPayload({ ...statusPayload, state })).toThrow('payload.state')
+  })
+
+  it.each([null, undefined, '', 123, '2026-02-30T12:00:00Z', '2026-09-22T15:00:00.1234567890Z'])('rejects an invalid or nullable status-event timestamp: %s', (lastCheckedAt) => {
+    expect(() => validateStatusChangedEventPayload({ ...statusPayload, lastCheckedAt })).toThrow('payload.lastCheckedAt')
+  })
+
+  it.each([null, undefined, '', 123, '2026-02-30T12:00:00Z'])('applies the shared timestamp checks to incident starts: %s', (startedAt) => {
+    expect(() => validateIncidentOpenedEventPayload({ ...openedPayload, startedAt })).toThrow('payload.startedAt')
+    expect(() => validateIncidentResolvedEventPayload({ ...resolvedPayload, startedAt })).toThrow('payload.startedAt')
+  })
+
+  it.each([undefined, '', 0, resolvedPayload.resolvedAt])('requires explicit null on incident.opened: %s', (resolvedAt) => {
+    expect(() => validateIncidentOpenedEventPayload({ ...openedPayload, resolvedAt })).toThrow('payload.resolvedAt')
+  })
+
+  it.each([null, undefined, '', 0, 'invalid'])('requires a valid timestamp on incident.resolved: %s', (resolvedAt) => {
+    expect(() => validateIncidentResolvedEventPayload({ ...resolvedPayload, resolvedAt })).toThrow('payload.resolvedAt')
+  })
+
+  it('retains variable fractional lengths, offsets and nanoseconds in event payloads', () => {
+    for (const timestamp of ['2026-09-22T15:00:00Z', '2026-09-22T15:00:00.1Z', '2026-09-22T15:00:00.123456Z', '2026-09-22T15:00:00.123456789+10:00']) {
+      const body = Object.freeze({ ...statusPayload, lastCheckedAt: timestamp })
+      validateStatusChangedEventPayload(body)
+      expect(body.lastCheckedAt).toBe(timestamp)
+    }
+  })
+
+  it('validates incident chronology to a nanosecond without changing raw identity', () => {
+    const startedAt = '2026-09-24T12:00:00.12Z'
+    const body = Object.freeze({ serviceId: 'new-service', startedAt, resolvedAt: '2026-09-24T20:00:00.120000001+08:00' })
+    validateIncidentResolvedEventPayload(body)
+    expect(`${body.serviceId}|${body.startedAt}`).toBe(`new-service|${startedAt}`)
+    expect(body.resolvedAt).toBe('2026-09-24T20:00:00.120000001+08:00')
+    for (const resolvedAt of ['2026-09-24T20:00:00.120000+08:00', '2026-09-24T07:00:00.119999999-05:00']) {
+      expect(() => validateIncidentResolvedEventPayload({ ...body, resolvedAt })).toThrow('payload.resolvedAt')
+    }
   })
 })
