@@ -48,6 +48,17 @@ it('keeps the content host mounted when supplied services and incidents change',
   expect(calculate).toHaveBeenCalledTimes(calls)
 })
 
+it('dismisses the notice without replacing the map and restores focus to Search', async () => {
+  localStorage.removeItem('pulsegrid-desktop-notice-dismissed')
+  render(shell())
+  measure()
+  const map = screen.getByRole('group', { name: 'Service treemap' })
+  await userEvent.setup().click(screen.getByRole('button', { name: 'Dismiss larger-screen notice' }))
+  expect(screen.queryByRole('complementary', { name: 'Larger-screen notice' })).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Search services' })).toHaveFocus()
+  expect(screen.getByRole('group', { name: 'Service treemap' })).toBe(map)
+})
+
 const alpha = { ...makeService('a', 'up'), name: 'Alpha', category: 'developer-cloud' as const }
 const beta = { ...makeService('b', 'unknown'), name: 'Beta' }
 const empty: IncidentsResponse = { active: [], resolved: [] }

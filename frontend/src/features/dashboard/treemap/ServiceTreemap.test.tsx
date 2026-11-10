@@ -20,7 +20,7 @@ describe('ServiceTreemap', () => {
       makeService('model', 'unknown'),
     ]} />)
     expect(screen.queryByRole('listitem')).not.toBeInTheDocument()
-    expect(screen.getByText('The service map is available on wider screens.')).toBeInTheDocument()
+    expect(screen.queryByText('The service map is available on wider screens.')).not.toBeInTheDocument()
     measure()
     const developer = screen.getByRole('region', { name: 'Developer & Cloud' })
     expect(within(developer).getByRole('button', { name: 'Service developer: Operational' })).toBeInTheDocument()
@@ -34,6 +34,14 @@ describe('ServiceTreemap', () => {
     measure(60, 50)
     expect(screen.getByRole('heading', { name: 'AI' })).toHaveClass('sr-only')
     expect(screen.getByRole('region', { name: 'AI' })).toBeInTheDocument()
+  })
+
+  it.each([304, 359, 414, 624, 751, 752, 1008, 1424])('uses the same host and layout at container width %s', (width) => {
+    render(<ServiceTreemap onSelectService={vi.fn()} services={[makeService('model', 'up')]} />)
+    const host = screen.getByRole('group', { name: 'Service treemap' }).parentElement
+    expect(host).not.toHaveClass('hidden', 'md:block')
+    measure(width, 400)
+    expect(screen.getByRole('button', { name: 'Service model: Operational' })).toBeInTheDocument()
   })
 
   it('reuses geometry and tile identity for status, timestamp, name and input-order changes', () => {

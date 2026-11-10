@@ -22,7 +22,7 @@ export function StatusSummary({ services }: { services: readonly ServiceDTO[] })
   return (
     <section
       aria-label="Service status summary"
-      className="flex shrink-0 flex-col justify-between gap-3 border-b bg-card/40 px-4 py-3 sm:flex-row sm:items-center sm:px-5"
+      className="flex shrink-0 flex-col justify-between gap-2 border-b bg-card/40 px-3 py-2 sm:flex-row sm:items-center sm:gap-3 sm:px-5 sm:py-3"
     >
       <div className="min-w-0">
         <div className="flex items-center gap-2">

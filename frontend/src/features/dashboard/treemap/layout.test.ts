@@ -107,6 +107,24 @@ describe('createTreemapLayout', () => {
       }
     }
   })
+
+  it.each([[304, 160], [304, 360], [359, 400], [414, 450], [624, 300]])('keeps dense mobile geometry bounded at %s × %s', (width, height) => {
+    const rectangle = { x: 0, y: 0, width, height }
+    const services = Array.from({ length: 500 }, (_, i) => service(`service-${i}`, order[i % order.length], 1 + i % 10))
+    // ServiceTreemap canonicalizes geometry inputs before passing them to the adapter.
+    const layout = createTreemapLayout(JSON.parse(createGeometryKey(services)) as GeometryService[], rectangle)
+    expect(layout.flatMap((group) => group.services)).toHaveLength(500)
+    expect(layout.map((group) => group.category)).toEqual(order)
+    expect(createTreemapLayout(JSON.parse(createGeometryKey([...services].reverse())) as GeometryService[], rectangle)).toEqual(layout)
+    for (const group of layout) {
+      expectInside(group.bounds, rectangle)
+      if (group.label) expectInside(group.label, { x: 0, y: 0, width: group.bounds.width, height: group.bounds.height })
+      for (const item of group.services) {
+        expectInside(item.allocation, group.content)
+        expectInside(item.bounds, item.allocation)
+      }
+    }
+  })
 })
 
 describe('geometry inputs', () => {

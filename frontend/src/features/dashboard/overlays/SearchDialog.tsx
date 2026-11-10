@@ -55,7 +55,7 @@ export function SearchDialog({ services, onSelect }: { services: readonly Servic
             }
           }}
           placeholder="Search services or categories…"
-          className="h-12 w-full bg-transparent pr-12 pl-10 text-sm focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring"
+          className="h-12 w-full bg-transparent pr-12 pl-10 text-base focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring md:text-sm"
         />
       </div>
       <ul id={listID} role="listbox" aria-label="Matching services" className="min-h-0 max-h-80 overflow-y-auto overscroll-contain border-t">

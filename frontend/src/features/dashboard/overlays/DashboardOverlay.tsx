@@ -19,6 +19,44 @@ export function DashboardOverlay({ mode, title, focusKey, onDismiss, returnFocus
   const pressedOutside = useRef(false)
   const lastFocused = useRef<HTMLElement | null>(null)
   const titleID = useId()
+  const isOpen = mode !== null
+
+  useLayoutEffect(() => {
+    const element = dialog.current
+    const viewport = window.visualViewport
+    if (!isOpen || !element || !viewport) return
+    let frame: number | undefined
+
+    const reset = () => {
+      element.style.removeProperty('--overlay-height')
+      element.style.removeProperty('--overlay-top')
+    }
+
+    const update = () => {
+      frame = undefined
+      // Do not counteract browser pinch zoom by fitting the panel to its magnified viewport.
+      if (Math.abs(viewport.scale - 1) > 0.01 || viewport.height <= 0) {
+        reset()
+        return
+      }
+      element.style.setProperty('--overlay-height', `${viewport.height}px`)
+      element.style.setProperty('--overlay-top', `${Math.max(0, viewport.offsetTop)}px`)
+    }
+
+    const schedule = () => {
+      frame ??= requestAnimationFrame(update)
+    }
+
+    update()
+    viewport.addEventListener('resize', schedule)
+    viewport.addEventListener('scroll', schedule)
+    return () => {
+      viewport.removeEventListener('resize', schedule)
+      viewport.removeEventListener('scroll', schedule)
+      if (frame !== undefined) cancelAnimationFrame(frame)
+      reset()
+    }
+  }, [isOpen])
 
   useLayoutEffect(() => {
     const element = dialog.current
@@ -50,8 +88,7 @@ export function DashboardOverlay({ mode, title, focusKey, onDismiss, returnFocus
     onDismiss()
     const opener = returnFocus.current
     if (opener?.isConnected && !opener.matches(':disabled')) opener.focus()
-    // Hidden or removed openers cannot receive focus, including when a desktop
-    // tile disappears at the mobile breakpoint. No layout measurement is needed.
+    // Hidden or removed openers cannot receive focus. No layout measurement is needed.
     if (document.activeElement !== opener) fallbackFocus.current?.focus()
   }
 

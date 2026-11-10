@@ -55,10 +55,10 @@ describe('ServiceTile', () => {
     expect(tile).not.toHaveAttribute('tabindex')
   })
 
-  it('uses a single name/icon row at the minimum Medium size', () => {
+  it('uses identity/status instead of a meaningless name at the minimum Medium size', () => {
     const { container } = renderTile(58, 40)
-    expect(screen.getByText('Service example')).toHaveClass('truncate')
-    expect(container.querySelector('[data-service-identity]')).toBeNull()
+    expect(screen.queryByText('Service example')).not.toBeInTheDocument()
+    expect(container.querySelector('[data-service-identity]')).toBeInTheDocument()
     expect(container.querySelector('svg')).toBeInTheDocument()
     expect(screen.queryByText('Operational')).not.toBeInTheDocument()
   })
@@ -75,6 +75,25 @@ describe('ServiceTile', () => {
     expect(Boolean(container.querySelector('[data-service-identity]'))).toBe(monogram)
     expect(container.querySelector('svg')).toBeInTheDocument()
     expect(screen.queryByText('Service example')).not.toBeInTheDocument()
+  })
+
+  it.each([
+    [78, 40, false], [79, 40, true], // Compact Medium name: 40px after padding, gap and icon.
+    [68, 32, false], [69, 32, true], // Small name: reduced padding, same readable width.
+    [60, 57, false], [61, 58, true], // Medium two-row layout also needs readable width and height.
+  ])('fits a readable name at %s × %s: %s', (width, height, visible) => {
+    renderTile(width, height)
+    expect(Boolean(screen.queryByText('Service example'))).toBe(visible)
+    expect(screen.getByRole('button')).toHaveAccessibleName('Service example: Operational')
+  })
+
+  it.each([
+    [96, 74, 12], [79, 40, 11], [131, 40, 11.5], [180, 40, 12], [100, 32, 11],
+  ])('bounds the %s × %s name font to %spx without text measurement', (width, height, fontSize) => {
+    renderTile(width, height)
+    const name = screen.getByText('Service example')
+    expect(name).toHaveClass('truncate')
+    expect(name).toHaveStyle({ fontSize: `${fontSize}px` })
   })
 
   it.each(['up', 'down', 'unknown'] as const)('retains a bounded Tiny %s indicator and accessible identity', (state) => {

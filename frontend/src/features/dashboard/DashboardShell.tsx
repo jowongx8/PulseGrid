@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { IncidentsResponse, ServiceDTO } from '@/data/contracts'
 import { Navbar } from './Navbar'
 import { StatusSummary } from './StatusSummary'
+import { MobileNotice } from './MobileNotice'
 import { ServiceTreemap } from './treemap/ServiceTreemap'
 import { DashboardOverlay } from './overlays/DashboardOverlay'
 import { SearchDialog } from './overlays/SearchDialog'
@@ -57,7 +58,7 @@ export function DashboardShell({ services, incidents }: DashboardShellProps) {
     : overlay.kind === 'incidents' ? 'Incident feed' : 'Search services'
 
   return (
-    <div className="flex h-dvh min-w-0 flex-col overflow-hidden bg-background">
+    <div className="flex min-h-dvh min-w-0 flex-col bg-background pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)]">
       <Navbar
         activeIncidentCount={incidents.active.length}
         onSearch={(opener) => open({ kind: 'search' }, opener)}
@@ -65,7 +66,8 @@ export function DashboardShell({ services, incidents }: DashboardShellProps) {
         searchButtonRef={searchButton}
       />
       <StatusSummary services={services} />
-      <main aria-label="Service map" className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
+      <MobileNotice onDismiss={() => searchButton.current?.focus()} />
+      <main aria-label="Service map" className="relative min-h-40 min-w-0 flex-1 overflow-hidden">
         <ServiceTreemap services={services} onSelectService={openService} />
       </main>
       <DashboardOverlay
