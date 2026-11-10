@@ -14,27 +14,31 @@ afterEach(() => {
   resetThemeTestState()
 })
 
+const onSearch = vi.fn()
+const onIncidents = vi.fn()
+
 function renderNavbar(activeIncidentCount = 0) {
-  return render(<ThemeProvider><Navbar activeIncidentCount={activeIncidentCount} /></ThemeProvider>)
+  return render(<ThemeProvider><Navbar onSearch={onSearch} onIncidents={onIncidents} activeIncidentCount={activeIncidentCount} /></ThemeProvider>)
 }
 
 describe('Navbar', () => {
-  it('renders accessible disabled controls and a truthful demo indicator', async () => {
+  it('renders accessible controls and a truthful demo indicator', async () => {
     const user = userEvent.setup()
     renderNavbar(2)
     expect(screen.getByRole('banner')).toBeInTheDocument()
     expect(screen.getByRole('navigation', { name: 'Dashboard controls' })).toBeInTheDocument()
     const search = screen.getByRole('button', { name: 'Search services' })
     const incidents = screen.getByRole('button', { name: 'Incidents (2 active)' })
-    expect(search).toBeDisabled()
-    expect(incidents).toBeDisabled()
+    expect(search).toBeEnabled()
+    expect(incidents).toBeEnabled()
     expect(within(incidents).getByText('2')).toBeInTheDocument()
     expect(screen.getByText(/Demo/)).toHaveTextContent('no backend connection')
     expect(screen.queryByRole('link')).not.toBeInTheDocument()
 
     await user.click(search)
     await user.click(incidents)
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(onSearch).toHaveBeenCalledWith(search)
+    expect(onIncidents).toHaveBeenCalledWith(incidents)
   })
 
   it('does not show a numeric badge when there are no active incidents', () => {
@@ -49,6 +53,8 @@ describe('Navbar', () => {
     const user = userEvent.setup()
     renderNavbar()
 
+    await user.tab()
+    await user.tab()
     await user.tab()
     const toggle = screen.getByRole('button', { name: `Switch to ${next} theme` })
     expect(toggle).toHaveFocus()

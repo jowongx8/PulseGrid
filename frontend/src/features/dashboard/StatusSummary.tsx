@@ -1,5 +1,6 @@
 import type { ServiceDTO } from '@/data/contracts'
-import { deriveStatusSummary, formatServiceCheck } from './status-summary'
+import { deriveStatusSummary } from './status-summary'
+import { formatTimestamp } from './timestamps'
 
 export function StatusSummary({ services }: { services: readonly ServiceDTO[] }) {
   const { total, up, down, unknown, healthyPercentage, latestCheckedAt } = deriveStatusSummary(services)
@@ -36,7 +37,7 @@ export function StatusSummary({ services }: { services: readonly ServiceDTO[] })
           {latestCheckedAt === null ? 'No service checks recorded' : (
             <>
               Latest service check:{' '}
-              <time dateTime={latestCheckedAt}>{formatServiceCheck(latestCheckedAt)}</time>
+              <time dateTime={latestCheckedAt}>{formatTimestamp(latestCheckedAt)}</time>
             </>
           )}
         </p>

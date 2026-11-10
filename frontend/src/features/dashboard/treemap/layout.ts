@@ -2,17 +2,7 @@ import type { ServiceCategory, ServiceDTO } from '@/data/contracts'
 import { squarify } from './squarify'
 import type { Rect } from './squarify'
 
-// This presentation order takes precedence over sorting categories by weight.
-export const categoryLabels = {
-  'developer-cloud': 'Developer & Cloud',
-  ai: 'AI',
-  communication: 'Communication',
-  'social-media': 'Social Media',
-  productivity: 'Productivity',
-  entertainment: 'Entertainment',
-  gaming: 'Gaming',
-  commerce: 'Commerce',
-} satisfies Record<ServiceCategory, string>
+import { categoryLabels, isKnownCategory } from '../category-presentation'
 
 export type GeometryService = Pick<ServiceDTO, 'id' | 'category' | 'weight'>
 
@@ -50,6 +40,7 @@ function inset(rect: Rect, gap: number): Rect {
 }
 
 export function createTreemapLayout(services: readonly GeometryService[], bounds: Rect): CategoryPlacement[] {
+  if (services.some((service) => !isKnownCategory(service.category))) return []
   if (new Set(services.map((service) => service.id)).size !== services.length) return []
   const valid = services.filter((service) => Number.isFinite(service.weight) && service.weight > 0)
   const largest = valid.reduce((max, service) => Math.max(max, service.weight), 0)

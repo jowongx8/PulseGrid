@@ -15,7 +15,7 @@ function measure(width = 800, height = 500) {
 
 describe('ServiceTreemap', () => {
   it('waits for measurement, then renders labelled categories and current DTOs', () => {
-    render(<ServiceTreemap services={[
+    render(<ServiceTreemap onSelectService={vi.fn()} services={[
       { ...makeService('developer', 'up'), category: 'developer-cloud' },
       makeService('model', 'unknown'),
     ]} />)
@@ -23,14 +23,14 @@ describe('ServiceTreemap', () => {
     expect(screen.getByText('The service map is available on wider screens.')).toBeInTheDocument()
     measure()
     const developer = screen.getByRole('region', { name: 'Developer & Cloud' })
-    expect(within(developer).getByRole('listitem', { name: 'Service developer: Operational' })).toBeInTheDocument()
+    expect(within(developer).getByRole('button', { name: 'Service developer: Operational' })).toBeInTheDocument()
     const ai = screen.getByRole('region', { name: 'AI' })
-    expect(within(ai).getByRole('listitem', { name: 'Service model: Unknown' })).toBeInTheDocument()
-    expect(screen.queryByRole('button')).not.toBeInTheDocument()
+    expect(within(ai).getByRole('button', { name: 'Service model: Unknown' })).toBeInTheDocument()
+    expect(screen.getAllByRole('button')).toHaveLength(2)
   })
 
   it('keeps category names accessible when visual headers do not fit', () => {
-    render(<ServiceTreemap services={[makeService('model', 'up')]} />)
+    render(<ServiceTreemap onSelectService={vi.fn()} services={[makeService('model', 'up')]} />)
     measure(60, 50)
     expect(screen.getByRole('heading', { name: 'AI' })).toHaveClass('sr-only')
     expect(screen.getByRole('region', { name: 'AI' })).toBeInTheDocument()
@@ -39,28 +39,28 @@ describe('ServiceTreemap', () => {
   it('reuses geometry and tile identity for status, timestamp, name and input-order changes', () => {
     const calculate = vi.spyOn(layout, 'createTreemapLayout')
     const services = [makeService('a', 'up'), makeService('b', 'down')]
-    const { rerender } = render(<ServiceTreemap services={services} />)
+    const { rerender } = render(<ServiceTreemap onSelectService={vi.fn()} services={services} />)
     measure()
     const calls = calculate.mock.calls.length
-    const tile = screen.getByRole('listitem', { name: 'Service a: Operational' })
-    const position = tile.getAttribute('style')
+    const tile = screen.getByRole('button', { name: 'Service a: Operational' })
+    const position = tile.closest('li')?.getAttribute('style')
 
-    rerender(<ServiceTreemap services={services.map((service) => ({
+    rerender(<ServiceTreemap onSelectService={vi.fn()} services={services.map((service) => ({
       ...service,
       name: `Renamed ${service.id}`,
       status: { state: 'unknown' as const, lastCheckedAt: '2026-11-10T12:00:00.123456789Z' },
     })).reverse()} />)
 
     expect(calculate).toHaveBeenCalledTimes(calls)
-    expect(screen.getByRole('listitem', { name: 'Renamed a: Unknown' })).toBe(tile)
-    expect(tile.getAttribute('style')).toBe(position)
-    expect(tile).toHaveAttribute('data-status', 'unknown')
+    expect(screen.getByRole('button', { name: 'Renamed a: Unknown' })).toBe(tile)
+    expect(tile.closest('li')?.getAttribute('style')).toBe(position)
+    expect(tile.closest('li')).toHaveAttribute('data-status', 'unknown')
     expect(within(tile).getByText('Renamed a')).toBeInTheDocument()
   })
 
   it('recalculates on changed integer dimensions, without remounting tiles', () => {
     const calculate = vi.spyOn(layout, 'createTreemapLayout')
-    render(<ServiceTreemap services={[makeService('model', 'up')]} />)
+    render(<ServiceTreemap onSelectService={vi.fn()} services={[makeService('model', 'up')]} />)
     measure(800.5, 500.2)
     const tile = screen.getByRole('listitem')
     const oldStyle = tile.getAttribute('style')
@@ -80,7 +80,7 @@ describe('ServiceTreemap', () => {
   it('recalculates for service weight, category and membership changes', () => {
     const calculate = vi.spyOn(layout, 'createTreemapLayout')
     const original = makeService('model', 'up')
-    const { rerender } = render(<ServiceTreemap services={[original]} />)
+    const { rerender } = render(<ServiceTreemap onSelectService={vi.fn()} services={[original]} />)
     measure()
     const changes: ServiceDTO[][] = [
       [{ ...original, weight: 2 }],
@@ -90,19 +90,19 @@ describe('ServiceTreemap', () => {
     ]
     for (const services of changes) {
       const calls = calculate.mock.calls.length
-      rerender(<ServiceTreemap services={services} />)
+      rerender(<ServiceTreemap onSelectService={vi.fn()} services={services} />)
       expect(calculate).toHaveBeenCalledTimes(calls + 1)
       expect(screen.getAllByRole('listitem')).toHaveLength(services.length)
     }
   })
 
   it('distinguishes empty data from unusable geometry', () => {
-    const { rerender } = render(<ServiceTreemap services={[]} />)
+    const { rerender } = render(<ServiceTreemap onSelectService={vi.fn()} services={[]} />)
     measure()
     expect(screen.getByText('No services to display')).toBeInTheDocument()
-    rerender(<ServiceTreemap services={[{ ...makeService('model', 'up'), weight: NaN }]} />)
+    rerender(<ServiceTreemap onSelectService={vi.fn()} services={[{ ...makeService('model', 'up'), weight: NaN }]} />)
     expect(screen.getByText('Service map unavailable for this data')).toBeInTheDocument()
-    rerender(<ServiceTreemap services={[makeService('duplicate', 'up'), makeService('duplicate', 'down')]} />)
+    rerender(<ServiceTreemap onSelectService={vi.fn()} services={[makeService('duplicate', 'up'), makeService('duplicate', 'down')]} />)
     expect(screen.getByText('Service map unavailable for this data')).toBeInTheDocument()
   })
 })

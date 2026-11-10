@@ -5,7 +5,7 @@ function App() {
   return (
     <DashboardShell
       services={statusResponseFixture.services}
-      activeIncidents={incidentsResponseFixture.active}
+      incidents={incidentsResponseFixture}
     />
   )
 }

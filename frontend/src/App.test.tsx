@@ -23,11 +23,11 @@ it('supplies the development fixtures to the dashboard', () => {
   expect(summary.getAllByRole('listitem').map((chip) => chip.textContent)).toEqual([
     '1Down', '7Operational', '2Unknown',
   ])
-  expect(screen.getByRole('button', { name: 'Incidents (1 active)' })).toBeDisabled()
+  expect(screen.getByRole('button', { name: 'Incidents (1 active)' })).toBeEnabled()
   expect(screen.queryByText(/Temporary design-system verification/)).not.toBeInTheDocument()
   const treemap = screen.getByRole('group', { name: 'Service treemap' })
   act(() => observer.resize(treemap, 1000, 600))
   expect(within(treemap).getAllByRole('listitem')).toHaveLength(10)
-  expect(within(treemap).getByRole('listitem', { name: 'GitHub: Down' })).toBeInTheDocument()
-  expect(within(treemap).getByRole('listitem', { name: 'Discord: Unknown' })).toBeInTheDocument()
+  expect(within(treemap).getByRole('button', { name: 'GitHub: Down' })).toBeInTheDocument()
+  expect(within(treemap).getByRole('button', { name: 'Discord: Unknown' })).toBeInTheDocument()
 })

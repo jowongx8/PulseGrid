@@ -1,5 +1,6 @@
 import { Activity, Bell, Moon, Search, Sun } from 'lucide-react'
 import { useEffect, useState } from 'react'
+import type { Ref } from 'react'
 import { useTheme } from '@/theme'
 
 function Clock() {
@@ -28,7 +29,14 @@ function Clock() {
   )
 }
 
-export function Navbar({ activeIncidentCount }: { activeIncidentCount: number }) {
+interface NavbarProps {
+  activeIncidentCount: number
+  onSearch: (opener: HTMLButtonElement) => void
+  onIncidents: (opener: HTMLButtonElement) => void
+  searchButtonRef?: Ref<HTMLButtonElement>
+}
+
+export function Navbar({ activeIncidentCount, onSearch, onIncidents, searchButtonRef }: NavbarProps) {
   const { theme, setTheme } = useTheme()
 
   return (
@@ -48,9 +56,12 @@ export function Navbar({ activeIncidentCount }: { activeIncidentCount: number })
       <nav aria-label="Dashboard controls" className="ml-auto flex shrink-0 items-center gap-1.5">
         <button
           type="button"
-          disabled
+          ref={searchButtonRef}
+          onClick={(event) => onSearch(event.currentTarget)}
+          aria-haspopup="dialog"
+          aria-keyshortcuts="Control+K Meta+K"
           aria-label="Search services"
-          className="flex size-7 items-center justify-center rounded-md text-xs text-muted-foreground disabled:cursor-not-allowed sm:w-auto sm:gap-2 sm:border sm:bg-background sm:px-2.5"
+          className="flex size-7 items-center justify-center rounded-md text-xs text-muted-foreground hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring sm:w-auto sm:gap-2 sm:border sm:bg-background sm:px-2.5"
         >
           <Search aria-hidden="true" size={14} />
           <span className="hidden sm:inline">Search services</span>
@@ -60,9 +71,10 @@ export function Navbar({ activeIncidentCount }: { activeIncidentCount: number })
         </button>
         <button
           type="button"
-          disabled
+          onClick={(event) => onIncidents(event.currentTarget)}
+          aria-haspopup="dialog"
           aria-label={activeIncidentCount > 0 ? `Incidents (${activeIncidentCount} active)` : 'Incidents'}
-          className="flex h-7 items-center justify-center gap-1.5 rounded-md border bg-background px-2 text-xs text-muted-foreground disabled:cursor-not-allowed"
+          className="flex h-7 items-center justify-center gap-1.5 rounded-md border bg-background px-2 text-xs text-muted-foreground hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
         >
           <Bell aria-hidden="true" size={14} />
           <span className="hidden sm:inline">Incidents</span>

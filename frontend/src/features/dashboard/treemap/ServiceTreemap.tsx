@@ -1,11 +1,12 @@
 import { useId, useMemo } from 'react'
 import type { ServiceDTO } from '@/data/contracts'
-import { categoryLabels, createGeometryKey, createTreemapLayout } from './layout'
+import { createGeometryKey, createTreemapLayout } from './layout'
+import { categoryLabels, isKnownCategory } from '../category-presentation'
 import type { GeometryService } from './layout'
 import { ServiceTile } from './ServiceTile'
 import { useContainerSize } from './useContainerSize'
 
-export function ServiceTreemap({ services }: { services: readonly ServiceDTO[] }) {
+export function ServiceTreemap({ services, onSelectService }: { services: readonly ServiceDTO[]; onSelectService: (id: string, opener: HTMLButtonElement) => void }) {
   const headingPrefix = useId()
   const { ref, size: { width, height } } = useContainerSize()
   const geometryKey = useMemo(() => createGeometryKey(services), [services])
@@ -15,6 +16,7 @@ export function ServiceTreemap({ services }: { services: readonly ServiceDTO[] }
     { x: 0, y: 0, width, height },
   ), [geometryKey, width, height])
   const byID = new Map(services.map((service) => [service.id, service]))
+  const unsupported = services.some((service) => !isKnownCategory(service.category))
   const hasTiles = layout.some((category) => category.services.length > 0)
 
   return (
@@ -23,7 +25,7 @@ export function ServiceTreemap({ services }: { services: readonly ServiceDTO[] }
         <div ref={ref} role="group" aria-label="Service treemap" className="relative size-full overflow-hidden">
           {width > 0 && height > 0 && !hasTiles && (
             <p className="absolute inset-0 flex items-center justify-center p-2 text-center text-xs text-muted-foreground">
-              {services.length === 0 ? 'No services to display' : 'Service map unavailable for this data'}
+              {unsupported ? 'Service map unavailable: unsupported categories. Use search to view services.' : services.length === 0 ? 'No services to display' : 'Service map unavailable for this data'}
             </p>
           )}
           {layout.map(({ category, bounds, label, services: placements }) => (
@@ -46,7 +48,7 @@ export function ServiceTreemap({ services }: { services: readonly ServiceDTO[] }
               <ul className="absolute inset-0" aria-label={`${categoryLabels[category]} services`}>
                 {placements.map((placement) => {
                   const service = byID.get(placement.id)
-                  return service ? <ServiceTile key={service.id} service={service} placement={placement} /> : null
+                  return service ? <ServiceTile key={service.id} service={service} placement={placement} onSelect={onSelectService} /> : null
                 })}
               </ul>
             </section>
