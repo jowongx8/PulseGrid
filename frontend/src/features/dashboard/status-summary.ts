@@ -1,6 +1,6 @@
 import type { ApiTimestamp, ServiceDTO } from '@/data/contracts'
 
-import { timestampNanoseconds } from './timestamps'
+import { timestampNanoseconds } from '@/data/timestamps'
 
 export function deriveStatusSummary(services: readonly ServiceDTO[]) {
   const counts = { up: 0, down: 0, unknown: 0 }

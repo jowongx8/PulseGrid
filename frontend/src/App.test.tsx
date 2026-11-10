@@ -1,5 +1,5 @@
 import { act, render, screen, within } from '@testing-library/react'
-import { afterEach, beforeEach, expect, it } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import App from '@/App'
 import { ThemeProvider } from '@/ThemeProvider'
 import { mockThemeEnvironment, resetThemeTestState } from '@/test/theme'
@@ -13,6 +13,8 @@ beforeEach(() => {
 afterEach(resetThemeTestState)
 
 it('supplies the development fixtures to the dashboard', () => {
+  const fetch = vi.fn()
+  vi.stubGlobal('fetch', fetch)
   render(<ThemeProvider><App /></ThemeProvider>)
 
   expect(screen.getByRole('heading', { name: 'PulseGrid', level: 1 })).toBeInTheDocument()
@@ -30,4 +32,5 @@ it('supplies the development fixtures to the dashboard', () => {
   expect(within(treemap).getAllByRole('listitem')).toHaveLength(10)
   expect(within(treemap).getByRole('button', { name: 'GitHub: Down' })).toBeInTheDocument()
   expect(within(treemap).getByRole('button', { name: 'Discord: Unknown' })).toBeInTheDocument()
+  expect(fetch).not.toHaveBeenCalled()
 })

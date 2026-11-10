@@ -1,5 +1,6 @@
 import type { IncidentsResponse, ServiceDTO } from '@/data/contracts'
-import { compareTimestamps, formatTimestamp } from '../timestamps'
+import { compareTimestamps } from '@/data/timestamps'
+import { formatTimestamp } from '../timestamps'
 
 interface IncidentHistoryProps {
   incidents: IncidentsResponse
