@@ -1,0 +1,58 @@
+.service-tile {
+  background-color: var(--tile-surface);
+  box-shadow: inset 0 0 0 1px var(--tile-accent);
+}
+
+.service-tile[data-status='up'] {
+  --tile-accent: var(--op);
+  --tile-surface: var(--op-surface);
+}
+
+.service-tile[data-status='down'] {
+  --tile-accent: var(--down);
+  --tile-surface: var(--down-surface);
+}
+
+.service-tile[data-status='unknown'] {
+  --tile-accent: var(--unknown);
+  --tile-surface: var(--unknown-surface);
+}
+
+.service-tile::before {
+  content: '';
+  pointer-events: none;
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: min(3px, 100%);
+  background-color: var(--tile-accent);
+  opacity: 0.55;
+}
+
+.service-tile[data-status='down']::before {
+  opacity: 1;
+}
+
+.service-tile[data-status='unknown']:not([data-variant='tiny']) {
+  background-image: repeating-linear-gradient(
+    135deg,
+    color-mix(in oklab, var(--unknown) 8%, transparent) 0px,
+    color-mix(in oklab, var(--unknown) 8%, transparent) 1px,
+    transparent 1px,
+    transparent 7px
+  );
+}
+
+.service-tile .tiny-status {
+  background-color: var(--tile-accent);
+  border-radius: 50%;
+}
+
+.service-tile[data-status='down'] .tiny-status {
+  border-radius: 0;
+  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+}
+
+.service-tile[data-status='unknown'] .tiny-status {
+  background-color: var(--tile-surface);
+  box-shadow: inset 0 0 0 1.5px var(--tile-accent);
+}

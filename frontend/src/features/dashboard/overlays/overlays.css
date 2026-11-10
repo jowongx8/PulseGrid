@@ -1,0 +1,125 @@
+.dashboard-overlay {
+  position: fixed;
+  inset: var(--overlay-top, 0px) 0 auto;
+  width: 100%;
+  height: var(--overlay-height, 100dvh);
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+  border: 0;
+  background: transparent;
+  color: var(--foreground);
+  overflow: hidden;
+  overscroll-behavior: contain;
+}
+
+.dashboard-overlay[open] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.dashboard-overlay::backdrop {
+  background: color-mix(in oklab, var(--background) 60%, transparent);
+  backdrop-filter: blur(2px);
+  overflow: hidden;
+  overscroll-behavior: contain;
+}
+
+.dashboard-overlay[data-mode='search'] {
+  align-items: flex-start;
+  padding-top: max(calc(var(--overlay-height, 100dvh) * 0.15), calc(env(safe-area-inset-top) + 8px));
+}
+
+.dashboard-overlay[data-mode='search']::backdrop {
+  background: color-mix(in oklab, var(--background) 50%, transparent);
+}
+
+.dashboard-overlay[data-mode='incidents'] {
+  justify-content: flex-end;
+  align-items: stretch;
+  padding: 0;
+}
+
+.dashboard-overlay[data-mode='incidents']::backdrop {
+  background: color-mix(in oklab, var(--background) 35%, transparent);
+}
+
+.dashboard-overlay > .overlay-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 36rem;
+  min-height: 0;
+  max-height: 100%;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--card);
+  box-shadow: 0 20px 25px -5px rgb(0 0 0 / 20%);
+}
+
+.dashboard-overlay[data-mode='search'] > .overlay-panel { max-width: 32rem; }
+.dashboard-overlay[data-mode='incidents'] > .overlay-panel {
+  max-width: 380px;
+  height: 100%;
+  border-width: 0 0 0 1px;
+  border-radius: 0;
+}
+
+.dashboard-overlay .overlay-header {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  height: 52px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.dashboard-overlay .overlay-body {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.dashboard-overlay[data-mode='search'] .overlay-header { height: 0; padding: 0; border: 0; }
+.dashboard-overlay[data-mode='search'] .overlay-close { position: absolute; z-index: 1; right: 8px; top: 10px; }
+.dashboard-overlay[data-mode='search'] .overlay-body { display: flex; flex-direction: column; overflow: hidden; }
+
+.dashboard-overlay[data-mode='incidents'] .overlay-header {
+  height: calc(52px + env(safe-area-inset-top));
+  padding-top: env(safe-area-inset-top);
+  padding-right: max(16px, env(safe-area-inset-right));
+  padding-left: max(16px, env(safe-area-inset-left));
+}
+
+.dashboard-overlay[data-mode='incidents'] .overlay-body {
+  padding-right: env(safe-area-inset-right);
+  padding-bottom: env(safe-area-inset-bottom);
+  padding-left: env(safe-area-inset-left);
+}
+
+@media (width < 768px) {
+  .dashboard-overlay .overlay-close { width: 32px; height: 32px; }
+  .dashboard-overlay[data-mode='search'] .overlay-close { top: 8px; }
+
+  .dashboard-overlay[data-mode='service'] {
+    align-items: flex-end;
+    padding: max(8px, env(safe-area-inset-top)) env(safe-area-inset-right) 0 env(safe-area-inset-left);
+  }
+
+  .dashboard-overlay[data-mode='service'] > .overlay-panel {
+    max-width: none;
+    max-height: 85%;
+    border-bottom: 0;
+    border-radius: 12px 12px 0 0;
+  }
+
+  .dashboard-overlay[data-mode='service'] .overlay-body {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}
