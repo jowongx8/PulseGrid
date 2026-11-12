@@ -35,7 +35,7 @@ func TestCatalogueAPIsFilterMembershipWithoutDeletingHistory(t *testing.T) {
 				}
 			}
 			trackerIDs := []string{"openai"}
-			excluded := []string{"cloudflare", "slack", "google-drive", "rakuten-ichiba", "not-configured"}
+			excluded := []string{"cloudflare", "slack", "google-drive", "rakuten-ichiba", "nintendo-eshop", "not-configured"}
 			if mode == "one disabled" {
 				excluded = append(excluded, "notion")
 			}
@@ -45,7 +45,7 @@ func TestCatalogueAPIsFilterMembershipWithoutDeletingHistory(t *testing.T) {
 				}
 			}
 			// Ghost tracker/history entries model an existing database after catalogue cleanup.
-			trackerIDs = append(trackerIDs, "cloudflare", "slack", "google-drive", "rakuten-ichiba", "not-configured")
+			trackerIDs = append(trackerIDs, "cloudflare", "slack", "google-drive", "rakuten-ichiba", "nintendo-eshop", "not-configured")
 			tracker, err := status.NewTracker(trackerIDs)
 			if err != nil {
 				t.Fatal(err)
@@ -85,6 +85,7 @@ func TestCatalogueAPIsFilterMembershipWithoutDeletingHistory(t *testing.T) {
 			}
 			rakutenStart, rakutenEnd := at.Add(-time.Hour), at.Add(time.Second)
 			save("rakuten-ichiba", rakutenStart, &rakutenEnd)
+			save("nintendo-eshop", rakutenStart, &rakutenEnd)
 			if mode == "one disabled" {
 				save("notion", rakutenStart, &rakutenEnd)
 			}

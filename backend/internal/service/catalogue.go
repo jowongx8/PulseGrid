@@ -512,15 +512,6 @@ var (
 			Enabled:    true,
 		},
 		{
-			ID:         "nintendo-eshop",
-			Name:       "Nintendo eShop",
-			Category:   CategoryGaming,
-			WebsiteURL: "https://www.nintendo.com/us/store/",
-			CheckURL:   "https://www.nintendo.com/us/store/games/",
-			Weight:     7,
-			Enabled:    true,
-		},
-		{
 			ID:         "itch-io",
 			Name:       "itch.io",
 			Category:   CategoryGaming,

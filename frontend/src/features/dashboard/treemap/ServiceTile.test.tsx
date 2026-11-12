@@ -1,5 +1,5 @@
 import userEvent from '@testing-library/user-event'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import type { ServiceDTO, ServiceState } from '@/data/contracts'
 import { makeService } from '@/test/services'
@@ -22,6 +22,44 @@ function renderTile(width: number, height: number, service: ServiceDTO = makeSer
 }
 
 describe('ServiceTile', () => {
+  it.each(['spotify', 'instagram'])('shows %s in compact and large tiles', (id) => {
+    const service = makeService(id, 'up')
+    const { container, unmount } = renderTile(58, 40, service)
+    expect(container.querySelector('img')).toHaveAttribute('src', `/logos/${id}.svg`)
+    unmount()
+    const large = renderTile(150, 100, service)
+    expect(large.container.querySelector('img')).toHaveAttribute('src', `/logos/${id}.svg`)
+  })
+
+  it('keeps click and keyboard activation after a logo fails', async () => {
+    const user = userEvent.setup()
+    const onSelect = vi.fn()
+    const { container } = renderTile(150, 100, { ...makeService('github', 'down'), name: 'GitHub' }, onSelect)
+    const button = screen.getByRole('button', { name: 'GitHub: Down' })
+    expect(container.querySelector('img')).toHaveAttribute('src', '/logos/github.svg')
+    await user.click(button)
+    fireEvent.error(container.querySelector('img')!)
+    expect(container.querySelector('[data-service-identity="monogram"]')).toHaveTextContent('GI')
+    await user.keyboard('{Enter} ')
+    expect(onSelect).toHaveBeenCalledTimes(3)
+    expect(onSelect).toHaveBeenLastCalledWith('github', button)
+    expect(button.closest('li')).toHaveAttribute('data-status', 'down')
+  })
+
+  it.each([
+    [200, 180, 36], [96, 74, 22], [80, 60, 20], [58, 40, 18],
+    [50, 32, 18], [30, 30, null], [20, 20, null], [100, 29, null],
+  ])('fits or omits the logo in a %s × %s tile', (width, height, size) => {
+    const { container } = renderTile(width, height, makeService('github', 'up'))
+    const image = container.querySelector('img')
+    if (size === null) expect(image).toBeNull()
+    else {
+      expect(image).toHaveAttribute('src', '/logos/github.svg')
+      expect(image!.parentElement).toHaveStyle({ width: `${size}px`, height: `${size}px` })
+    }
+    expect(screen.getByRole('button')).toHaveAccessibleName('Service github: Operational')
+  })
+
   it('activates the same stable service ID with Enter and Space', async () => {
     const user = userEvent.setup()
     const onSelect = vi.fn()

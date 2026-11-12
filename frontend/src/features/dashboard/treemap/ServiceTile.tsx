@@ -17,7 +17,11 @@ export function ServiceTile({ service, placement, onSelect }: { service: Service
   const nameWidth = bounds.width - padding - (fullRows ? 0 : 18)
   const nameRow = variant !== 'tiny' && nameWidth >= 40 && bounds.height - (variant === 'small' ? 8 : 16) >= 15
   const nameSize = variant === 'large' ? 12 : variant === 'small' ? 11 : Math.min(12, Math.max(11, nameWidth / 8))
-  const smallMonogram = bounds.width >= 44 && bounds.height >= 26
+  const smallIdentity = bounds.width >= 44 && bounds.height >= 26
+  // Reserve padding, the name/status rows and their gap before growing the logo.
+  const identitySize = variant === 'large'
+    ? Math.min(36, Math.max(20, Math.floor(Math.min(bounds.width / 4, bounds.height - 49))))
+    : 20
   const accessibleName = `${service.name}: ${label}`
 
   return (
@@ -39,7 +43,7 @@ export function ServiceTile({ service, placement, onSelect }: { service: Service
           {fullRows ? (
             <div className="flex h-full min-w-0 flex-col justify-between gap-1 p-2 pl-2.5">
               <div className="flex items-start justify-between gap-1">
-                <ServiceIdentity name={service.name} size={20} />
+                <ServiceIdentity serviceId={service.id} name={service.name} size={identitySize} />
                 <Icon size={14} className="shrink-0" />
               </div>
               <div className="min-w-0">
@@ -53,8 +57,8 @@ export function ServiceTile({ service, placement, onSelect }: { service: Service
               <Icon size={14} className="shrink-0" />
             </div>
           ) : variant !== 'tiny' ? (
-            <div className={`flex h-full items-center gap-1 p-1 ${smallMonogram ? 'justify-between' : 'justify-center'}`}>
-              {smallMonogram && <ServiceIdentity name={service.name} size={18} />}
+            <div className={`flex h-full items-center gap-1 p-1 ${smallIdentity ? 'justify-between' : 'justify-center'}`}>
+              {smallIdentity && <ServiceIdentity serviceId={service.id} name={service.name} size={18} />}
               <Icon size={14} className="shrink-0" />
             </div>
           ) : bounds.width >= 16 && bounds.height >= 16 ? (

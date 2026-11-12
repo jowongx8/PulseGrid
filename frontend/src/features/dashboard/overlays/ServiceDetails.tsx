@@ -15,7 +15,7 @@ export function ServiceDetails({ service, incidents, incidentsUnavailable = fals
   return (
     <div className="space-y-5 p-4">
       <div className="flex items-center gap-3">
-        <ServiceIdentity name={service.name} size={44} />
+        <ServiceIdentity serviceId={service.id} name={service.name} size={44} />
         <div className="min-w-0 space-y-1">
           <ServiceStatus state={service.status.state} />
           <p className="break-words text-xs text-muted-foreground">{getCategoryLabel(service.category)}</p>

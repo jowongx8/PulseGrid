@@ -23,6 +23,7 @@ func TestCataloguePreservesRetainedIdentitiesAndMetadata(t *testing.T) {
 		{ID: "netflix", Name: "Netflix", Category: CategoryEntertainment, WebsiteURL: "https://www.netflix.com/", CheckURL: "https://www.netflix.com/browse", Weight: 8, Enabled: true},
 		{ID: "playstation-network", Name: "PlayStation Network", Category: CategoryGaming, WebsiteURL: "https://www.playstation.com/", CheckURL: "https://store.playstation.com/", Weight: 7, Enabled: true},
 		{ID: "amazon", Name: "Amazon", Category: CategoryCommerce, WebsiteURL: "https://www.amazon.com/", CheckURL: "https://www.amazon.com/", Weight: 9, Enabled: true},
+		{ID: "lazada-my", Name: "Lazada Malaysia", Category: CategoryCommerce, WebsiteURL: "https://www.lazada.com.my/", CheckURL: "https://www.lazada.com.my/", Weight: 8, Enabled: true},
 	}
 	byID := make(map[string]Service)
 	for _, svc := range Catalogue() {
@@ -41,7 +42,7 @@ func TestCataloguePreservesRetainedIdentitiesAndMetadata(t *testing.T) {
 func TestCatalogueDoesNotReuseRetiredIDs(t *testing.T) {
 	for _, svc := range Catalogue() {
 		switch svc.ID {
-		case "cloudflare", "slack", "google-drive":
+		case "cloudflare", "slack", "google-drive", "nintendo-eshop":
 			t.Errorf("retired ID %q must not be reused", svc.ID)
 		}
 	}
@@ -204,4 +205,12 @@ func mutateValidService(mutate func(*Service)) Service {
 	mutate(&svc)
 
 	return svc
+}
+
+func TestCatalogueMembersAreEnabled(t *testing.T) {
+	for _, svc := range Catalogue() {
+		if !svc.Enabled {
+			t.Errorf("catalogue member %q is disabled", svc.ID)
+		}
+	}
 }
