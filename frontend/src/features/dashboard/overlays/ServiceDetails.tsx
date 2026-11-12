@@ -3,12 +3,11 @@ import type { IncidentsResponse, ServiceDTO } from '@/data/contracts'
 import { getCategoryLabel } from '../category-presentation'
 import { ServiceIdentity } from '../ServiceIdentity'
 import { ServiceStatus } from '../ServiceStatus'
-import { formatTimestamp } from '../timestamps'
 import { IncidentHistory } from './IncidentHistory'
 
-export function ServiceDetails({ service, incidents }: { service: ServiceDTO | undefined; incidents: IncidentsResponse }) {
+export function ServiceDetails({ service, incidents, incidentsUnavailable = false }: { service: ServiceDTO | undefined; incidents: IncidentsResponse | null; incidentsUnavailable?: boolean }) {
   if (!service) return <p role="status" className="p-4 text-xs text-muted-foreground">This service is no longer available.</p>
-  const history = {
+  const history = incidents === null ? null : {
     active: incidents.active.filter((incident) => incident.serviceId === service.id),
     resolved: incidents.resolved.filter((incident) => incident.serviceId === service.id),
   }
@@ -23,10 +22,14 @@ export function ServiceDetails({ service, incidents }: { service: ServiceDTO | u
         </div>
       </div>
       <dl className="space-y-3 text-xs">
-        <div><dt className="text-muted-foreground">Last checked</dt><dd className="mt-1">{service.status.lastCheckedAt === null ? 'No service checks recorded' : <time dateTime={service.status.lastCheckedAt}>{formatTimestamp(service.status.lastCheckedAt)}</time>}</dd></div>
         <div><dt className="text-muted-foreground">Official website</dt><dd className="mt-1">{service.websiteUrl ? <a href={service.websiteUrl} target="_blank" rel="noopener noreferrer" className="inline-flex max-w-full items-center gap-1 rounded-sm underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-ring"><span className="break-all">{service.websiteUrl}</span><ExternalLink size={12} className="shrink-0" aria-hidden="true" /></a> : 'Website unavailable'}</dd></div>
       </dl>
-      <IncidentHistory incidents={history} services={[service]} />
+      {history !== null ? <IncidentHistory incidents={history} services={[service]} /> : (
+        <section aria-label="Incident information" className="space-y-2 text-xs text-muted-foreground">
+          {incidentsUnavailable ? <><h3 className="font-semibold">Incident information unavailable</h3><p>Service status is still available. Incident details couldn't be loaded.</p></>
+            : <p role="status">Loading incident information…</p>}
+        </section>
+      )}
     </div>
   )
 }

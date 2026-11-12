@@ -1,4 +1,4 @@
-import { StrictMode } from 'react'
+import { StrictMode, type ComponentProps } from 'react'
 import userEvent from '@testing-library/user-event'
 import type { IncidentsResponse, ServiceDTO } from '@/data/contracts'
 import { mockDialog } from '@/test/dialog'
@@ -24,7 +24,7 @@ it('keeps the content host mounted when supplied services and incidents change',
   const calculate = vi.spyOn(layout, 'createTreemapLayout')
   const { rerender } = render(
     <ThemeProvider>
-      <DashboardShell services={[makeService('new-service', 'up')]} incidents={{ active: [], resolved: [] }} />
+      <DashboardShell connectionStatus="live" services={[makeService('new-service', 'up')]} incidents={{ active: [], resolved: [] }} />
     </ThemeProvider>,
   )
   const main = screen.getByRole('main', { name: 'Service map' })
@@ -36,6 +36,7 @@ it('keeps the content host mounted when supplied services and incidents change',
   rerender(
     <ThemeProvider>
       <DashboardShell
+        connectionStatus="live"
         services={[makeService('new-service', 'unknown')]}
         incidents={{ active: [{ serviceId: 'new-service', startedAt: '2026-09-24T12:00:00.123456Z', resolvedAt: null }], resolved: [] }}
       />
@@ -62,13 +63,39 @@ it('dismisses the notice without replacing the map and restores focus to Search'
 const alpha = { ...makeService('a', 'up'), name: 'Alpha', category: 'developer-cloud' as const }
 const beta = { ...makeService('b', 'unknown'), name: 'Beta' }
 const empty: IncidentsResponse = { active: [], resolved: [] }
-const shell = (services: readonly ServiceDTO[] = [alpha, beta], incidents: IncidentsResponse = empty) => (
-  <ThemeProvider><DashboardShell services={services} incidents={incidents} /></ThemeProvider>
+const shell = (services: readonly ServiceDTO[] | null = [alpha, beta], incidents: IncidentsResponse | null = empty, options: Partial<ComponentProps<typeof DashboardShell>> = {}) => (
+  <ThemeProvider><DashboardShell connectionStatus="live" services={services} incidents={incidents} {...options} /></ThemeProvider>
 )
 
 function measure() {
   act(() => observer.resize(screen.getByRole('group', { name: 'Service treemap' }), 1000, 600))
 }
+
+it('keeps the shell and bell available while loading and ignores disabled search shortcuts', async () => {
+  const user = userEvent.setup()
+  const { rerender } = render(shell(null, null, { connectionStatus: 'connecting' }))
+  const main = screen.getByRole('main', { name: 'Service map' })
+  expect(main).toHaveAttribute('aria-busy', 'true')
+  expect(screen.getByRole('status', { name: 'Loading service statuses' })).toBeInTheDocument()
+  expect(within(main).queryByRole('button')).not.toBeInTheDocument()
+  await user.keyboard('{Control>}k{/Control}')
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: 'Incidents' }))
+  expect(screen.getByRole('status', { name: 'Loading incidents' })).toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: 'Close incident feed' }))
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Incidents' })).toHaveFocus())
+  rerender(shell([], empty))
+  expect(screen.getByRole('main', { name: 'Service map' })).toBe(main)
+  expect(screen.getByRole('heading', { name: 'No services available' })).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Search services' })).toBeEnabled()
+})
+
+it('uses the bell as the notice-dismissal focus fallback while search is disabled', async () => {
+  localStorage.removeItem('pulsegrid-desktop-notice-dismissed')
+  render(shell(null, null, { connectionStatus: 'connecting' }))
+  await userEvent.setup().click(screen.getByRole('button', { name: 'Dismiss larger-screen notice' }))
+  expect(screen.getByRole('button', { name: 'Incidents' })).toHaveFocus()
+})
 
 it('transitions Search directly to details in one native dialog and restores Search focus', async () => {
   const user = userEvent.setup()
@@ -128,7 +155,7 @@ it('opens a tile with Enter, keeps its geometry and returns focus to that tile',
   expect(tile.closest('li')?.getAttribute('style')).toBe(style)
 })
 
-it('resolves latest props by ID and keeps a removed service modal open with a fallback opener', async () => {
+it('resolves latest props by ID and closes removed service details with a fallback opener', async () => {
   const user = userEvent.setup()
   const { rerender } = render(shell())
   measure()
@@ -140,12 +167,11 @@ it('resolves latest props by ID and keeps a removed service modal open with a fa
   }))
   expect(screen.getByRole('dialog', { name: 'Renamed Alpha' })).toBe(dialog)
   expect(within(dialog).getByText('Down')).toBeInTheDocument()
-  expect(dialog.querySelector('time')).toHaveAttribute('datetime', time)
+  expect(dialog.querySelector('time')).toHaveAttribute('datetime', '2026-11-10T10:00:00Z')
+  expect(screen.queryByText('Last checked')).not.toBeInTheDocument()
   expect(within(dialog).getByText('Resolved')).toBeInTheDocument()
   rerender(shell([beta]))
-  expect(screen.getByRole('dialog', { name: 'Service unavailable' })).toBe(dialog)
-  expect(within(dialog).getByRole('status')).toHaveTextContent('This service is no longer available.')
-  await user.click(screen.getByRole('button', { name: 'Close service details' }))
+  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
   await waitFor(() => expect(screen.getByRole('button', { name: 'Search services' })).toHaveFocus())
 })
 

@@ -17,12 +17,12 @@ afterEach(() => {
 const onSearch = vi.fn()
 const onIncidents = vi.fn()
 
-function renderNavbar(activeIncidentCount = 0) {
-  return render(<ThemeProvider><Navbar onSearch={onSearch} onIncidents={onIncidents} activeIncidentCount={activeIncidentCount} /></ThemeProvider>)
+function renderNavbar(activeIncidentCount: number | null = 0, searchEnabled = true) {
+  return render(<ThemeProvider><Navbar onSearch={onSearch} onIncidents={onIncidents} activeIncidentCount={activeIncidentCount} searchEnabled={searchEnabled} /></ThemeProvider>)
 }
 
 describe('Navbar', () => {
-  it('renders accessible controls and a truthful demo indicator', async () => {
+  it('renders accessible controls without a demo indicator', async () => {
     const user = userEvent.setup()
     renderNavbar(2)
     expect(screen.getByRole('banner')).toBeInTheDocument()
@@ -32,7 +32,7 @@ describe('Navbar', () => {
     expect(search).toBeEnabled()
     expect(incidents).toBeEnabled()
     expect(within(incidents).getByText('2')).toBeInTheDocument()
-    expect(screen.getByText(/Demo/)).toHaveTextContent('no backend connection')
+    expect(screen.queryByText(/Demo|development fixtures/)).not.toBeInTheDocument()
     expect(screen.queryByRole('link')).not.toBeInTheDocument()
 
     await user.click(search)
@@ -41,10 +41,23 @@ describe('Navbar', () => {
     expect(onIncidents).toHaveBeenCalledWith(incidents)
   })
 
-  it('does not show a numeric badge when there are no active incidents', () => {
-    renderNavbar()
+  it.each([null, 0])('shows a normal enabled bell for an active count of %s', count => {
+    renderNavbar(count)
     const incidents = screen.getByRole('button', { name: 'Incidents' })
     expect(within(incidents).queryByText('0')).not.toBeInTheDocument()
+    expect(incidents).toBeEnabled()
+  })
+
+  it('disables only search before catalogue availability and explains why', async () => {
+    const user = userEvent.setup()
+    renderNavbar(null, false)
+    const search = screen.getByRole('button', { name: 'Search services' })
+    expect(search).toBeDisabled()
+    expect(search).toHaveAccessibleDescription('Search will be available when service statuses load.')
+    await user.click(search)
+    expect(onSearch).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: 'Incidents' }))
+    expect(onIncidents).toHaveBeenCalledOnce()
   })
 
   it.each(['light', 'dark'] as const)('switches from %s by keyboard and persists the choice', async (initial) => {

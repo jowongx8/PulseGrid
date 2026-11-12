@@ -4,12 +4,12 @@ import { formatTimestamp } from '../timestamps'
 
 interface IncidentHistoryProps {
   incidents: IncidentsResponse
-  services: readonly ServiceDTO[]
+  services: readonly ServiceDTO[] | null
   onSelectService?: (id: string) => void
 }
 
 export function IncidentHistory({ incidents, services, onSelectService }: IncidentHistoryProps) {
-  const byID = new Map(services.map((service) => [service.id, service]))
+  const byID = new Map(services?.map((service) => [service.id, service]))
   // Stable sorting retains the backend's internal-ID tie order without inventing it.
   const sections = [
     { title: 'Active incidents', active: true, empty: 'No active incidents.', items: [...incidents.active].sort((a, b) => compareTimestamps(b.startedAt, a.startedAt)) },
