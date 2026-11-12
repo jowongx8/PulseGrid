@@ -52,3 +52,10 @@ it('shows both feed empty states', () => {
   expect(screen.getByText('No active incidents.')).toBeInTheDocument()
   expect(screen.getByText('No recently resolved incidents.')).toBeInTheDocument()
 })
+
+it('preserves incident identity and timestamps when the catalogue is unavailable', () => {
+  render(<IncidentHistory services={null} incidents={{ active: [{ serviceId: 'legacy', startedAt: '2026-11-10T12:00:00.123456Z', resolvedAt: null }], resolved: [] }} />)
+  expect(screen.getByText('Unavailable service (legacy)')).toBeInTheDocument()
+  expect(screen.getByRole('listitem')).toHaveAttribute('data-incident-key', 'legacy|2026-11-10T12:00:00.123456Z')
+  expect(screen.queryByRole('button')).not.toBeInTheDocument()
+})

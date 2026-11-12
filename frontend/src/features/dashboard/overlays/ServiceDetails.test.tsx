@@ -10,7 +10,9 @@ it.each(['up', 'down', 'unknown'] as const)('shows available metadata and incide
     resolved: [{ serviceId: 'other', startedAt: '2026-11-10T09:00:00Z', resolvedAt: '2026-11-10T10:00:00Z' }],
   }} />)
   expect(screen.getByText(state === 'up' ? 'Operational' : state === 'down' ? 'Down' : 'Unknown')).toBeInTheDocument()
-  expect(container.querySelector('time')).toHaveAttribute('datetime', service.status.lastCheckedAt)
+  expect(container.querySelector('time')).toHaveAttribute('datetime', '2026-11-10T11:00:00.123456Z')
+  expect(screen.queryByText('Last checked')).not.toBeInTheDocument()
+  expect(service.status.lastCheckedAt).toBe('2026-11-10T20:00:00.123456789+08:00')
   const website = screen.getByRole('link', { name: 'https://example.com/official' })
   expect(website).toHaveAttribute('rel', 'noopener noreferrer')
   expect(screen.getByText('Ongoing')).toBeInTheDocument()
@@ -18,10 +20,35 @@ it.each(['up', 'down', 'unknown'] as const)('shows available metadata and incide
   expect(screen.queryByText(/other/)).not.toBeInTheDocument()
 })
 
-it('handles missing checks, website and selected service', () => {
+it('handles missing website and selected service without showing check timestamps', () => {
   const { rerender } = render(<ServiceDetails service={{ ...makeService('a', 'unknown'), websiteUrl: '' }} incidents={{ active: [], resolved: [] }} />)
-  expect(screen.getByText('No service checks recorded')).toBeInTheDocument()
+  expect(screen.queryByText('No service checks recorded')).not.toBeInTheDocument()
   expect(screen.getByText('Website unavailable')).toBeInTheDocument()
   rerender(<ServiceDetails service={undefined} incidents={{ active: [], resolved: [] }} />)
   expect(screen.getByRole('status')).toHaveTextContent('This service is no longer available.')
+})
+
+it.each([false, true])('preserves service metadata without manufacturing incident history (unavailable: %s)', incidentsUnavailable => {
+  render(<ServiceDetails service={makeService('a', 'down')} incidents={null} incidentsUnavailable={incidentsUnavailable} />)
+  expect(screen.getByText('Down')).toBeInTheDocument()
+  expect(screen.getByRole('link', { name: 'https://example.com' })).toBeInTheDocument()
+  expect(screen.getByText(incidentsUnavailable ? 'Incident information unavailable' : 'Loading incident information…')).toBeInTheDocument()
+  expect(screen.queryByText('No active incidents.')).not.toBeInTheDocument()
+  expect(screen.queryByText('Ongoing')).not.toBeInTheDocument()
+})
+
+it('keeps the incident status region mounted when loading becomes unavailable', () => {
+  const service = makeService('a', 'down')
+  const { rerender } = render(<ServiceDetails service={service} incidents={null} />)
+  const status = screen.getByRole('status', { name: 'Incident information' })
+  expect(status.tagName).toBe('SECTION')
+  expect(status).toHaveTextContent('Loading incident information…')
+  expect(status.querySelector('[role="status"]')).toBeNull()
+
+  rerender(<ServiceDetails service={service} incidents={null} incidentsUnavailable />)
+
+  expect(screen.getByRole('status', { name: 'Incident information' })).toBe(status)
+  expect(status).toHaveTextContent('Incident information unavailable')
+  expect(status).toHaveTextContent("Service status is still available. Incident details couldn't be loaded.")
+  expect(screen.queryByText('Loading incident information…')).not.toBeInTheDocument()
 })

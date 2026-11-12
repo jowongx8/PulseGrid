@@ -10,6 +10,23 @@ export default defineConfig({
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
   },
+  server: {
+    proxy: {
+      '/api': {
+        target: 'http://127.0.0.1:8080',
+        changeOrigin: true,
+        configure(proxy) {
+          proxy.on('proxyRes', (response, _request, downstream) => {
+            if (response.headers['content-type'] !== 'text/event-stream') return
+            // Wait for the proxy to copy headers, then flush before the first heartbeat.
+            queueMicrotask(() => {
+              if (!downstream.destroyed && !downstream.writableEnded) downstream.flushHeaders()
+            })
+          })
+        },
+      },
+    },
+  },
   test: {
     environment: 'jsdom',
     environmentOptions: {
