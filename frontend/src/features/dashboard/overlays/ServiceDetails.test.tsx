@@ -36,3 +36,19 @@ it.each([false, true])('preserves service metadata without manufacturing inciden
   expect(screen.queryByText('No active incidents.')).not.toBeInTheDocument()
   expect(screen.queryByText('Ongoing')).not.toBeInTheDocument()
 })
+
+it('keeps the incident status region mounted when loading becomes unavailable', () => {
+  const service = makeService('a', 'down')
+  const { rerender } = render(<ServiceDetails service={service} incidents={null} />)
+  const status = screen.getByRole('status', { name: 'Incident information' })
+  expect(status.tagName).toBe('SECTION')
+  expect(status).toHaveTextContent('Loading incident information…')
+  expect(status.querySelector('[role="status"]')).toBeNull()
+
+  rerender(<ServiceDetails service={service} incidents={null} incidentsUnavailable />)
+
+  expect(screen.getByRole('status', { name: 'Incident information' })).toBe(status)
+  expect(status).toHaveTextContent('Incident information unavailable')
+  expect(status).toHaveTextContent("Service status is still available. Incident details couldn't be loaded.")
+  expect(screen.queryByText('Loading incident information…')).not.toBeInTheDocument()
+})

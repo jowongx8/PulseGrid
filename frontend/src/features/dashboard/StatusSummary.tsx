@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import { LoaderCircle, Radio, RefreshCw, WifiOff } from 'lucide-react'
 import type { ServiceDTO } from '@/data/contracts'
 import { deriveStatusSummary } from './status-summary'
@@ -39,6 +40,22 @@ export function StatusSummary({ services, connectionStatus, unavailable = false 
       : unknown !== null && unknown > 0
         ? `${unknown} service ${unknown === 1 ? 'status' : 'statuses'} unknown`
         : 'All monitored services operational'
+  const healthHeadline = total === null ? null
+    : down !== null && down > 0 ? 'Some monitored services are down'
+    : unknown !== null && unknown > 0 ? 'Some monitored service statuses are unknown'
+    : headline
+  const healthAnnouncement = useRef<HTMLSpanElement>(null)
+  const previousHealthHeadline = useRef(healthHeadline)
+
+  useEffect(() => {
+    const previous = previousHealthHeadline.current
+    previousHealthHeadline.current = healthHeadline
+    if (healthAnnouncement.current && healthHeadline !== previous) {
+      // The empty React-owned region receives only changes after a loaded baseline.
+      healthAnnouncement.current.textContent = previous !== null && healthHeadline !== null ? healthHeadline : ''
+    }
+  }, [healthHeadline])
+
   const emphasis = down !== null && down > 0 ? 'text-down' : total !== null && total > 0 && unknown === 0 ? 'text-op' : 'text-muted-foreground'
   const dot = down !== null && down > 0 ? 'bg-down' : total !== null && total > 0 && unknown === 0 ? 'bg-op' : 'bg-muted-foreground'
   const chips = [
@@ -52,6 +69,7 @@ export function StatusSummary({ services, connectionStatus, unavailable = false 
       aria-label="Service status summary"
       className="flex shrink-0 flex-col justify-between gap-2 border-b bg-card/40 px-3 py-2 sm:flex-row sm:items-center sm:gap-3 sm:px-5 sm:py-3"
     >
+      <span ref={healthAnnouncement} role="status" aria-label="Service health updates" aria-live="polite" aria-atomic="true" className="sr-only" />
       <div className="min-w-0">
         <div className="flex items-center gap-2">
           <span aria-hidden="true" className={`size-2.5 shrink-0 rounded-full ${dot}`} />

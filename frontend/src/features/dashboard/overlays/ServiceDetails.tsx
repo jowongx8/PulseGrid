@@ -25,9 +25,9 @@ export function ServiceDetails({ service, incidents, incidentsUnavailable = fals
         <div><dt className="text-muted-foreground">Official website</dt><dd className="mt-1">{service.websiteUrl ? <a href={service.websiteUrl} target="_blank" rel="noopener noreferrer" className="inline-flex max-w-full items-center gap-1 rounded-sm underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-ring"><span className="break-all">{service.websiteUrl}</span><ExternalLink size={12} className="shrink-0" aria-hidden="true" /></a> : 'Website unavailable'}</dd></div>
       </dl>
       {history !== null ? <IncidentHistory incidents={history} services={[service]} /> : (
-        <section aria-label="Incident information" className="space-y-2 text-xs text-muted-foreground">
+        <section role="status" aria-label="Incident information" className="space-y-2 text-xs text-muted-foreground">
           {incidentsUnavailable ? <><h3 className="font-semibold">Incident information unavailable</h3><p>Service status is still available. Incident details couldn't be loaded.</p></>
-            : <p role="status">Loading incident information…</p>}
+            : <p>Loading incident information…</p>}
         </section>
       )}
     </div>

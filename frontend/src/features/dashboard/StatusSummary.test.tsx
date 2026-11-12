@@ -1,3 +1,4 @@
+import { StrictMode } from 'react'
 import { render, screen, within } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import type { ServiceState } from '@/data/contracts'
@@ -70,5 +71,74 @@ describe('StatusSummary', () => {
     expect(indicator).toHaveClass(connectionStatus === 'live' ? 'text-live' : 'text-muted-foreground')
     expect(indicator).not.toContainElement(screen.getByRole('list', { name: 'Service counts' }))
     expect(indicator.querySelector('svg')).toHaveAttribute('aria-hidden', 'true')
+  })
+
+  it.each<[ServiceState[]]>([[['up']], [['down']], [['unknown']], [[]]])('does not announce the initial health of %j under Strict Mode', states => {
+    render(<StrictMode><StatusSummary connectionStatus="live" services={states.map((state, i) => makeService(`${i}`, state))} /></StrictMode>)
+    expect(screen.getByRole('status', { name: 'Service health updates' })).toBeEmptyDOMElement()
+  })
+
+  it('updates the persistent polite region for meaningful health transitions and recovery', () => {
+    const { rerender } = render(<StrictMode><StatusSummary connectionStatus="live" services={[makeService('a', 'up')]} /></StrictMode>)
+    const announcement = screen.getByRole('status', { name: 'Service health updates' })
+    expect(announcement).toHaveClass('sr-only')
+    expect(announcement).toHaveAttribute('aria-live', 'polite')
+    expect(announcement).toHaveAttribute('aria-atomic', 'true')
+
+    const transitions: [ServiceState[], string][] = [
+      [['down'], 'Some monitored services are down'],
+      [['unknown'], 'Some monitored service statuses are unknown'],
+      [['up'], 'All monitored services operational'],
+      [[], 'No services monitored'],
+    ]
+    for (const [states, message] of transitions) {
+      rerender(<StrictMode><StatusSummary connectionStatus="live" services={states.map((state, i) => makeService(`${i}`, state))} /></StrictMode>)
+      expect(screen.getByRole('status', { name: 'Service health updates' })).toBe(announcement)
+      expect(announcement).toHaveTextContent(message)
+    }
+  })
+
+  it('does not rewrite the health announcement for counts, successful checks or unrelated rerenders', () => {
+    const { rerender } = render(<StatusSummary connectionStatus="live" services={[makeService('a', 'up')]} />)
+    const announcement = screen.getByRole('status', { name: 'Service health updates' })
+
+    for (const state of ['down', 'unknown', 'up'] as const) {
+      rerender(<StatusSummary connectionStatus="live" services={[makeService('a', state)]} />)
+      const announcementText = announcement.firstChild
+      expect(announcementText).not.toBeNull()
+
+      const services = [makeService('a', state, '2026-11-10T12:00:00.123456789Z'), makeService('b', state)]
+      rerender(<StatusSummary connectionStatus="live" services={services} />)
+      rerender(<StatusSummary connectionStatus="live" services={services} unavailable />)
+      expect(announcement.firstChild).toBe(announcementText)
+    }
+  })
+
+  it('keeps initial loading, unavailable and first loaded data silent', () => {
+    const { rerender } = render(<StatusSummary connectionStatus="connecting" services={null} />)
+    const announcement = screen.getByRole('status', { name: 'Service health updates' })
+    expect(announcement).toBeEmptyDOMElement()
+
+    rerender(<StatusSummary connectionStatus="offline" services={null} unavailable />)
+    expect(announcement).toBeEmptyDOMElement()
+    rerender(<StatusSummary connectionStatus="live" services={[makeService('a', 'down')]} />)
+    expect(announcement).toBeEmptyDOMElement()
+    rerender(<StatusSummary connectionStatus="live" services={[makeService('a', 'up')]} />)
+    expect(announcement).toHaveTextContent('All monitored services operational')
+  })
+
+  it('keeps connection announcements separate from health announcements', () => {
+    const services = [makeService('a', 'up')]
+    const { rerender } = render(<StatusSummary connectionStatus="connecting" services={services} />)
+    const connection = screen.getByRole('status', { name: 'Dashboard connection' })
+    const health = screen.getByRole('status', { name: 'Service health updates' })
+    expect(connection).not.toContainElement(health)
+
+    for (const status of ['live', 'reconnecting', 'offline'] as const) {
+      rerender(<StatusSummary connectionStatus={status} services={services} />)
+      expect(screen.getByRole('status', { name: 'Dashboard connection' })).toBe(connection)
+      expect(within(connection).getByText(status[0].toUpperCase() + status.slice(1))).toBeInTheDocument()
+      expect(health).toBeEmptyDOMElement()
+    }
   })
 })
