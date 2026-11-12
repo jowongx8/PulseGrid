@@ -127,10 +127,6 @@ func selectServices(catalogue []service.Service, serviceID string) ([]service.Se
 				continue
 			}
 
-			if !svc.Enabled {
-				return nil, fmt.Errorf("service %q is disabled", serviceID)
-			}
-
 			return []service.Service{svc}, nil
 		}
 

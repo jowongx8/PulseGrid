@@ -9,6 +9,7 @@ import (
 
 	"github.com/jowongx8/backend/internal/incident"
 	"github.com/jowongx8/backend/internal/monitoring"
+	"github.com/jowongx8/backend/internal/service"
 	"github.com/jowongx8/backend/internal/status"
 	"github.com/jowongx8/backend/internal/storage/sqlite"
 )
@@ -105,7 +106,7 @@ func TestIncidentProcessorCanonicalIdentityWithoutRestart(t *testing.T) {
 		t.Fatalf("resolved transition = %+v, want start %s and resolution %s", resolved, wantStartedAt, wantResolvedAt)
 	}
 
-	activeFeed, resolvedFeed, err := store.ListFeed(ctx, 20)
+	activeFeed, resolvedFeed, err := store.ListFeed(ctx, 20, []string{"example"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +171,7 @@ func TestIncidentCanonicalIdentitySurvivesRestart(t *testing.T) {
 		t.Fatalf("resolved transition = %+v, want opening start %s and resolution %s", resolved, opened.StartedAt, wantResolvedAt)
 	}
 
-	query, err := NewIncidentsQuery(store)
+	query, err := NewIncidentsQuery(store, []service.Service{{ID: "example", Enabled: true}})
 	if err != nil {
 		t.Fatal(err)
 	}

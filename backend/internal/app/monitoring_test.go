@@ -255,7 +255,7 @@ func TestOutstandingSubmitterSkipsUntilResultProcessed(t *testing.T) {
 		}),
 		outstanding: make(map[string]struct{}),
 	}
-	svc := service.Service{ID: "example"}
+	svc := service.Service{ID: "example", Enabled: true}
 	if err := guard.Submit(context.Background(), svc); err != nil {
 		t.Fatal(err)
 	}
@@ -287,7 +287,7 @@ func TestOutstandingSubmitterRollsBackFailedSubmission(t *testing.T) {
 		}),
 		outstanding: make(map[string]struct{}),
 	}
-	svc := service.Service{ID: "example"}
+	svc := service.Service{ID: "example", Enabled: true}
 	if err := guard.Submit(context.Background(), svc); !errors.Is(err, wantErr) {
 		t.Fatalf("first Submit() error = %v, want %v", err, wantErr)
 	}
@@ -320,11 +320,11 @@ func TestBlockedSubmissionDoesNotHoldOutstandingMutex(t *testing.T) {
 		outstanding: make(map[string]struct{}),
 	}
 	aDone := make(chan error, 1)
-	go func() { aDone <- guard.Submit(context.Background(), service.Service{ID: "a"}) }()
+	go func() { aDone <- guard.Submit(context.Background(), service.Service{ID: "a", Enabled: true}) }()
 	waitSignal(t, aStarted)
 
 	bDone := make(chan error, 1)
-	go func() { bDone <- guard.Submit(context.Background(), service.Service{ID: "b"}) }()
+	go func() { bDone <- guard.Submit(context.Background(), service.Service{ID: "b", Enabled: true}) }()
 	waitSignal(t, bSubmitted)
 	if err := waitError(t, bDone); err != nil {
 		t.Fatal(err)
@@ -336,7 +336,7 @@ func TestBlockedSubmissionDoesNotHoldOutstandingMutex(t *testing.T) {
 		close(released)
 	}()
 	waitSignal(t, released)
-	go func() { bDone <- guard.Submit(context.Background(), service.Service{ID: "b"}) }()
+	go func() { bDone <- guard.Submit(context.Background(), service.Service{ID: "b", Enabled: true}) }()
 	waitSignal(t, bSubmitted)
 	if err := waitError(t, bDone); err != nil {
 		t.Fatal(err)
@@ -533,5 +533,12 @@ func assertResultsClosed(t *testing.T, results <-chan monitoring.CheckResult) {
 		case <-timer.C:
 			t.Fatal("results channel was not closed")
 		}
+	}
+}
+
+func TestMonitoringRuntimeRejectsAllDisabledCatalogue(t *testing.T) {
+	_, err := NewMonitoringRuntime([]service.Service{{ID: "disabled", Enabled: false}}, checkerFunc(func(context.Context, service.Service) monitoring.CheckResult { return monitoring.CheckResult{} }), checkResultWriterFunc(func(context.Context, monitoring.CheckResult) error { return nil }), newTestIncidentProcessor(), successfulEventPublisher(), 15*time.Second, 4, 4)
+	if err == nil {
+		t.Fatal("expected no enabled services")
 	}
 }

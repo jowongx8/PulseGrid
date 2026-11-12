@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jowongx8/backend/internal/incident"
@@ -19,11 +20,22 @@ func NewIncidentStore(db *sql.DB) *IncidentStore {
 	return &IncidentStore{db: db}
 }
 
-// ListFeed reads all active incidents and fills the target with recent resolved
-// incidents from one database snapshot.
-func (s *IncidentStore) ListFeed(ctx context.Context, target int) (active []incident.Incident, resolved []incident.Incident, retErr error) {
+// ListFeed reads incidents for the supplied catalogue membership from one
+// snapshot. Filtering precedes the active count and resolved-history limit.
+func (s *IncidentStore) ListFeed(ctx context.Context, target int, serviceIDs []string) (active []incident.Incident, resolved []incident.Incident, retErr error) {
 	if target < 0 {
 		return nil, nil, errors.New("list incident feed: target must not be negative")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+	if len(serviceIDs) == 0 {
+		return []incident.Incident{}, []incident.Incident{}, nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(serviceIDs)), ",")
+	args := make([]any, len(serviceIDs))
+	for index, id := range serviceIDs {
+		args[index] = id
 	}
 
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
@@ -38,14 +50,14 @@ func (s *IncidentStore) ListFeed(ctx context.Context, target int) (active []inci
 		}
 	}()
 
-	active, err = listActiveIncidents(ctx, tx)
+	active, err = listActiveIncidents(ctx, tx, placeholders, args)
 	if err != nil {
 		return nil, nil, err
 	}
 	resolved = make([]incident.Incident, 0)
 	remaining := target - len(active)
 	if remaining > 0 {
-		resolved, err = listResolvedIncidents(ctx, tx, remaining)
+		resolved, err = listResolvedIncidents(ctx, tx, remaining, placeholders, args)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -57,13 +69,13 @@ func (s *IncidentStore) ListFeed(ctx context.Context, target int) (active []inci
 	return active, resolved, nil
 }
 
-func listActiveIncidents(ctx context.Context, tx *sql.Tx) ([]incident.Incident, error) {
+func listActiveIncidents(ctx context.Context, tx *sql.Tx, placeholders string, args []any) ([]incident.Incident, error) {
 	rows, err := tx.QueryContext(ctx, `
 		SELECT service_id, started_at_us
 		FROM incidents
-		WHERE resolved_at_us IS NULL
+		WHERE resolved_at_us IS NULL AND service_id IN (`+placeholders+`)
 		ORDER BY started_at_us DESC, id DESC
-	`)
+	`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query active incident feed: %w", err)
 	}
@@ -87,14 +99,14 @@ func listActiveIncidents(ctx context.Context, tx *sql.Tx) ([]incident.Incident, 
 	return values, nil
 }
 
-func listResolvedIncidents(ctx context.Context, tx *sql.Tx, limit int) ([]incident.Incident, error) {
+func listResolvedIncidents(ctx context.Context, tx *sql.Tx, limit int, placeholders string, args []any) ([]incident.Incident, error) {
 	rows, err := tx.QueryContext(ctx, `
 		SELECT service_id, started_at_us, resolved_at_us
 		FROM incidents
-		WHERE resolved_at_us IS NOT NULL
+		WHERE resolved_at_us IS NOT NULL AND service_id IN (`+placeholders+`)
 		ORDER BY resolved_at_us DESC, id DESC
 		LIMIT ?
-	`, limit)
+	`, append(append([]any(nil), args...), limit)...)
 	if err != nil {
 		return nil, fmt.Errorf("query resolved incident feed: %w", err)
 	}

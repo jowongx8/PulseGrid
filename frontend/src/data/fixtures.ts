@@ -2,8 +2,8 @@ import type { ApiTimestamp, IncidentsResponse, StatusResponse } from '@/data/con
 
 export const fixtureReferenceTimestamp = '2026-09-24T12:00:00.123456789Z' satisfies ApiTimestamp
 
-// Development fixtures mirror the currently enabled backend/internal/service/catalogue.go
-// entries in catalogue order. The backend remains the production catalogue authority.
+// Development fixtures are a representative subset of the backend service catalogue.
+// The backend remains the production catalogue authority.
 export const statusResponseFixture = {
   services: [
     {

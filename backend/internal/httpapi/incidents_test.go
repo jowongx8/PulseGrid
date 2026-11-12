@@ -39,7 +39,7 @@ func TestIncidentsReturnsPublicIncidentFeed(t *testing.T) {
 		},
 		Resolved: []app.IncidentView{
 			{ServiceID: "discord", StartedAt: resolvedNewest.Add(-time.Hour), ResolvedAt: &resolvedNewest},
-			{ServiceID: "slack", StartedAt: resolvedOlder.Add(-time.Hour), ResolvedAt: &resolvedOlder},
+			{ServiceID: "stripe", StartedAt: resolvedOlder.Add(-time.Hour), ResolvedAt: &resolvedOlder},
 		},
 	}}
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/incidents", nil)
@@ -85,7 +85,7 @@ func TestIncidentsReturnsPublicIncidentFeed(t *testing.T) {
 				"resolvedAt": "2026-09-22T12:00:00.123456789+10:00",
 			},
 			map[string]any{
-				"serviceId":  "slack",
+				"serviceId":  "stripe",
 				"startedAt":  "2026-09-22T10:00:00.123456789+10:00",
 				"resolvedAt": "2026-09-22T11:00:00.123456789+10:00",
 			},

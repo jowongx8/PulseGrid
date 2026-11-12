@@ -16,7 +16,7 @@ import (
 )
 
 func TestIncidentStoreListFeedReturnsNonNilEmptyGroups(t *testing.T) {
-	active, resolved, err := NewIncidentStore(openIncidentTestDB(t)).ListFeed(context.Background(), 20)
+	active, resolved, err := NewIncidentStore(openIncidentTestDB(t)).ListFeed(context.Background(), 20, []string{"github"})
 	if err != nil {
 		t.Fatalf("ListFeed() error = %v", err)
 	}
@@ -25,6 +25,48 @@ func TestIncidentStoreListFeedReturnsNonNilEmptyGroups(t *testing.T) {
 	}
 	if resolved == nil || len(resolved) != 0 {
 		t.Fatalf("resolved = %#v, want non-nil empty slice", resolved)
+	}
+}
+
+func TestIncidentStoreFiltersMembershipBeforeFeedCapacity(t *testing.T) {
+	db := openIncidentTestDB(t)
+	for index := range 30 {
+		insertStoredIncident(t, db, fmt.Sprintf("retired-active-%02d", index), int64(10_000+index), nil)
+		insertStoredIncident(t, db, "retired-resolved", int64(20_000+index), int64Pointer(int64(30_000+index)))
+	}
+	insertStoredIncident(t, db, "github", 5_000, nil)
+	insertStoredIncident(t, db, "openai", 6_000, nil)
+	for index := range 25 {
+		insertStoredIncident(t, db, "github", int64(100+index), int64Pointer(int64(200+index)))
+	}
+	store := NewIncidentStore(db)
+	active, resolved, err := store.ListFeed(context.Background(), 20, []string{"github", "openai"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertIncidentServiceOrder(t, active, []string{"openai", "github"})
+	if len(resolved) != 18 || resolved[0].StartedAt.UnixMicro() != 124 || resolved[17].StartedAt.UnixMicro() != 107 {
+		t.Fatalf("resolved = %+v, want 18 newest eligible incidents", resolved)
+	}
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM incidents").Scan(&count); err != nil || count != 87 {
+		t.Fatalf("historical row count = %d, error = %v; want all 87 rows retained", count, err)
+	}
+	open, err := store.ListOpen(context.Background())
+	if err != nil || len(open) != 32 {
+		t.Fatalf("restoration rows = %d, error = %v; want all 32 open histories", len(open), err)
+	}
+}
+
+func TestIncidentStoreEmptyOrUnknownMembershipNeverExposesHistory(t *testing.T) {
+	db := openIncidentTestDB(t)
+	insertStoredIncident(t, db, "github", 100, nil)
+	insertStoredIncident(t, db, "openai", 200, int64Pointer(300))
+	for _, ids := range [][]string{nil, {}, {"missing"}, {"x') OR 1=1 --"}} {
+		active, resolved, err := NewIncidentStore(db).ListFeed(context.Background(), 20, ids)
+		if err != nil || active == nil || resolved == nil || len(active) != 0 || len(resolved) != 0 {
+			t.Fatalf("membership %q returned (%+v, %+v, %v), want empty arrays", ids, active, resolved, err)
+		}
 	}
 }
 
@@ -90,7 +132,7 @@ func TestIncidentStoreListFeedOrdersGroupsDeterministically(t *testing.T) {
 		insertStoredIncident(t, db, value.serviceID, value.startedAt, value.resolved)
 	}
 
-	active, resolved, err := NewIncidentStore(db).ListFeed(context.Background(), 10)
+	active, resolved, err := NewIncidentStore(db).ListFeed(context.Background(), 10, []string{"active-old", "active-tie-first", "active-tie-second", "resolved-old", "resolved-tie-first", "resolved-tie-second"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,14 +160,17 @@ func TestIncidentStoreListFeedFillsRemainingTargetCapacity(t *testing.T) {
 	for _, activeCount := range []int{0, 3, 19, 20, 21, 25} {
 		t.Run(fmt.Sprintf("%d active", activeCount), func(t *testing.T) {
 			db := openIncidentTestDB(t)
+			var serviceIDs []string
 			for index := range 25 {
+				serviceIDs = append(serviceIDs, fmt.Sprintf("resolved-%02d", index))
 				insertStoredIncident(t, db, fmt.Sprintf("resolved-%02d", index), int64(1_000+index), int64Pointer(int64(10_000+index)))
 			}
 			for index := range activeCount {
+				serviceIDs = append(serviceIDs, fmt.Sprintf("active-%02d", index))
 				insertStoredIncident(t, db, fmt.Sprintf("active-%02d", index), int64(20_000+index), nil)
 			}
 
-			active, resolved, err := NewIncidentStore(db).ListFeed(context.Background(), 20)
+			active, resolved, err := NewIncidentStore(db).ListFeed(context.Background(), 20, serviceIDs)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -154,7 +199,7 @@ func TestIncidentStoreListFeedTargetZeroKeepsAllActive(t *testing.T) {
 	insertStoredIncident(t, db, "active", 2_000, nil)
 	insertStoredIncident(t, db, "resolved", 1_000, int64Pointer(1_500))
 
-	active, resolved, err := NewIncidentStore(db).ListFeed(context.Background(), 0)
+	active, resolved, err := NewIncidentStore(db).ListFeed(context.Background(), 0, []string{"active", "resolved"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +212,7 @@ func TestIncidentStoreListFeedTargetZeroKeepsAllActive(t *testing.T) {
 }
 
 func TestIncidentStoreListFeedRejectsNegativeTarget(t *testing.T) {
-	active, resolved, err := NewIncidentStore(openIncidentTestDB(t)).ListFeed(context.Background(), -1)
+	active, resolved, err := NewIncidentStore(openIncidentTestDB(t)).ListFeed(context.Background(), -1, nil)
 	if err == nil || active != nil || resolved != nil {
 		t.Fatalf("ListFeed(-1) = (%v, %v, %v), want nil groups and error", active, resolved, err)
 	}
@@ -187,7 +232,7 @@ func TestIncidentStoreListFeedUsesOneReadSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = tx.Rollback() })
-	active, err := listActiveIncidents(ctx, tx)
+	active, err := listActiveIncidents(ctx, tx, "?", []any{"github"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +242,7 @@ func TestIncidentStoreListFeedUsesOneReadSnapshot(t *testing.T) {
 	if err := store.Resolve(ctx, opened); err != nil {
 		t.Fatalf("resolve while read snapshot is open: %v", err)
 	}
-	resolved, err := listResolvedIncidents(ctx, tx, 20)
+	resolved, err := listResolvedIncidents(ctx, tx, 20, "?", []any{"github"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +253,7 @@ func TestIncidentStoreListFeedUsesOneReadSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	active, resolved, err = store.ListFeed(ctx, 20)
+	active, resolved, err = store.ListFeed(ctx, 20, []string{"github"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +266,7 @@ func TestIncidentStoreListFeedRespectsCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	if _, _, err := NewIncidentStore(openIncidentTestDB(t)).ListFeed(ctx, 20); !errors.Is(err, context.Canceled) {
+	if _, _, err := NewIncidentStore(openIncidentTestDB(t)).ListFeed(ctx, 20, []string{"github"}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("ListFeed() error = %v, want context.Canceled", err)
 	}
 }
@@ -232,7 +277,7 @@ func TestIncidentStoreListFeedReportsReadFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, _, err := NewIncidentStore(db).ListFeed(context.Background(), 20); err == nil || !strings.Contains(err.Error(), "query active incident feed") {
+	if _, _, err := NewIncidentStore(db).ListFeed(context.Background(), 20, []string{"github"}); err == nil || !strings.Contains(err.Error(), "query active incident feed") {
 		t.Fatalf("ListFeed() error = %v, want contextual active-query failure", err)
 	}
 }

@@ -7,12 +7,15 @@ import (
 	"time"
 
 	"github.com/jowongx8/backend/internal/incident"
+	"github.com/jowongx8/backend/internal/service"
 )
 
 const publicIncidentTarget = 20
 
+// IncidentFeedReader filters membership before computing feed capacity. An
+// empty service list returns no incidents, including retained historical rows.
 type IncidentFeedReader interface {
-	ListFeed(context.Context, int) (active []incident.Incident, resolved []incident.Incident, err error)
+	ListFeed(context.Context, int, []string) (active []incident.Incident, resolved []incident.Incident, err error)
 }
 
 type IncidentView struct {
@@ -27,18 +30,25 @@ type IncidentsView struct {
 }
 
 type IncidentsQuery struct {
-	incidents IncidentFeedReader
+	incidents  IncidentFeedReader
+	serviceIDs []string
 }
 
-func NewIncidentsQuery(incidents IncidentFeedReader) (*IncidentsQuery, error) {
+func NewIncidentsQuery(incidents IncidentFeedReader, services []service.Service) (*IncidentsQuery, error) {
 	if incidents == nil {
 		return nil, errors.New("incident feed reader is required")
 	}
-	return &IncidentsQuery{incidents: incidents}, nil
+	serviceIDs := make([]string, 0, len(services))
+	for _, svc := range services {
+		if svc.Enabled {
+			serviceIDs = append(serviceIDs, svc.ID)
+		}
+	}
+	return &IncidentsQuery{incidents: incidents, serviceIDs: serviceIDs}, nil
 }
 
 func (q *IncidentsQuery) Execute(ctx context.Context) (IncidentsView, error) {
-	active, resolved, err := q.incidents.ListFeed(ctx, publicIncidentTarget)
+	active, resolved, err := q.incidents.ListFeed(ctx, publicIncidentTarget, q.serviceIDs)
 	if err != nil {
 		return IncidentsView{}, fmt.Errorf("list incident feed: %w", err)
 	}
