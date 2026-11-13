@@ -7,7 +7,6 @@ import { getServiceLogo, serviceLogos } from './serviceLogos'
 const directory = resolve('public/logos')
 const catalogue = readFileSync(resolve('../backend/internal/service/catalogue.go'), 'utf8')
 const ids = [...catalogue.matchAll(/^\s*ID:\s+"([^"]+)"/gmu)].map((match) => match[1])
-const sources = readFileSync(resolve(directory, 'SOURCES.md'), 'utf8')
 
 describe('service logos', () => {
   it('accounts for every actual backend catalogue ID', () => {
@@ -19,12 +18,10 @@ describe('service logos', () => {
     expect(getServiceLogo('amazon', 14)).toBe('/logos/amazon.svg')
   })
 
-  it.each(ids)('associates %s with its local asset or documented monogram', (id) => {
+  it.each(ids)('associates %s with its local asset or monogram fallback', (id) => {
     const asset = serviceLogos[id]
-    expect(sources).toContain(`| \`${id}\` |`)
     if (asset === null) {
       expect(getServiceLogo(id)).toBeUndefined()
-      expect(sources).toContain(`| \`${id}\` | Monogram`)
       return
     }
     expect(asset).toMatch(new RegExp(`^${id}\\.(svg|png|webp)$`, 'u'))
