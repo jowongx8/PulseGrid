@@ -64,7 +64,8 @@ func newEventStreamHandler(subscriber EventSubscriber, heartbeatInterval time.Du
 		w.WriteHeader(http.StatusOK)
 
 		controller := http.NewResponseController(w)
-		if err := controller.Flush(); err != nil {
+		// Send body data as well as headers so idle streams start immediately.
+		if err := writeAndFlush(w, controller, []byte(": connected\n\n")); err != nil {
 			return
 		}
 
