@@ -23,25 +23,25 @@ func TestNewSchedulerValidation(t *testing.T) {
 		{
 			name:      "nil submitter",
 			submitter: nil,
-			services:  []service.Service{schedulerService("github", true)},
+			services:  []service.Service{schedulerService("github")},
 			interval:  time.Second,
 		},
 		{
 			name:      "zero interval",
 			submitter: submitter,
-			services:  []service.Service{schedulerService("github", true)},
+			services:  []service.Service{schedulerService("github")},
 			interval:  0,
 		},
 		{
 			name:      "negative interval",
 			submitter: submitter,
-			services:  []service.Service{schedulerService("github", true)},
+			services:  []service.Service{schedulerService("github")},
 			interval:  -time.Second,
 		},
 		{
-			name:      "zero enabled services",
+			name:      "empty catalogue",
 			submitter: submitter,
-			services:  []service.Service{schedulerService("github", false)},
+			services:  nil,
 			interval:  time.Second,
 		},
 	}
@@ -60,22 +60,23 @@ func TestNewSchedulerValidation(t *testing.T) {
 	}
 }
 
-func TestSchedulerUsesEnabledServiceSnapshotInInputOrder(t *testing.T) {
+func TestSchedulerUsesServiceSnapshotInInputOrder(t *testing.T) {
 	start := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
 	clock := newFakeSchedulerClock(start)
 	submitter := newRecordingSchedulerSubmitter(clock)
+	disabled := schedulerService("disabled")
+	disabled.Enabled = false
 	services := []service.Service{
-		schedulerService("disabled-a", false),
-		schedulerService("github", true),
-		schedulerService("disabled-b", false),
-		schedulerService("cloudflare", true),
-		schedulerService("openai", true),
+		schedulerService("github"),
+		schedulerService("cloudflare"),
+		schedulerService("openai"),
 	}
 
+	services = append(services, disabled)
 	scheduler := newTestScheduler(t, submitter, services, 15*time.Second, clock)
-	services[1] = schedulerService("mutated", true)
-	services[3].Enabled = false
-	services[4].ID = "changed"
+	services[0] = schedulerService("mutated")
+	services[1].ID = "changed-too"
+	services[2].ID = "changed"
 
 	calls := runSchedulerForSubmissions(t, scheduler, submitter, 3)
 	assertCallIDs(t, calls, []string{"github", "cloudflare", "openai"})
@@ -105,6 +106,23 @@ func TestSchedulerStaggersFirstCycleWithoutStartupBurst(t *testing.T) {
 	}
 }
 
+func TestSchedulerStaggersCurrentCatalogueAcrossFullCycles(t *testing.T) {
+	services := service.Catalogue()
+	base := time.Date(2026, 11, 12, 12, 0, 0, 0, time.UTC)
+	clock := newFakeSchedulerClock(base)
+	submitter := newRecordingSchedulerSubmitter(clock)
+	scheduler := newTestScheduler(t, submitter, services, 15*time.Second, clock)
+	calls := runSchedulerForSubmissions(t, scheduler, submitter, len(services)*3)
+	for slot, call := range calls {
+		cycle, index := slot/len(services), slot%len(services)
+		want := base.Add(time.Duration(cycle)*15*time.Second + 15*time.Second*time.Duration(index)/time.Duration(len(services)))
+		next := base.Add(time.Duration((slot+1)/len(services))*15*time.Second + 15*time.Second*time.Duration((slot+1)%len(services))/time.Duration(len(services)))
+		if call.serviceID != services[index].ID || call.at != want || call.deadline != next {
+			t.Fatalf("slot %d = %+v, want %s at %v with deadline %v", slot, call, services[index].ID, want, next)
+		}
+	}
+}
+
 func TestSchedulerUsesDirectOffsetCalculationWithoutAccumulatedRounding(t *testing.T) {
 	start := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
 	clock := newFakeSchedulerClock(start)
@@ -121,11 +139,11 @@ func TestSchedulerUsesDirectOffsetCalculationWithoutAccumulatedRounding(t *testi
 	}
 }
 
-func TestSchedulerSchedulesOneEnabledServiceOncePerFullInterval(t *testing.T) {
+func TestSchedulerSchedulesOneServiceOncePerFullInterval(t *testing.T) {
 	start := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
 	clock := newFakeSchedulerClock(start)
 	submitter := newRecordingSchedulerSubmitter(clock)
-	scheduler := newTestScheduler(t, submitter, []service.Service{schedulerService("github", true)}, 15*time.Second, clock)
+	scheduler := newTestScheduler(t, submitter, []service.Service{schedulerService("github")}, 15*time.Second, clock)
 
 	calls := runSchedulerForSubmissions(t, scheduler, submitter, 3)
 	for index, call := range calls {
@@ -146,8 +164,8 @@ func TestSchedulerKeepsSecondCycleAnchoredToFullInterval(t *testing.T) {
 	clock := newFakeSchedulerClock(start)
 	submitter := newRecordingSchedulerSubmitter(clock)
 	services := []service.Service{
-		schedulerService("github", true),
-		schedulerService("cloudflare", true),
+		schedulerService("github"),
+		schedulerService("cloudflare"),
 	}
 	scheduler := newTestScheduler(t, submitter, services, 10*time.Second, clock)
 
@@ -167,8 +185,8 @@ func TestSchedulerLongRunDoesNotDriftFromSubmissionDelays(t *testing.T) {
 	clock := newFakeSchedulerClock(start)
 	submitter := newRecordingSchedulerSubmitter(clock)
 	services := []service.Service{
-		schedulerService("github", true),
-		schedulerService("cloudflare", true),
+		schedulerService("github"),
+		schedulerService("cloudflare"),
 	}
 	scheduler := newTestScheduler(t, submitter, services, 10*time.Second, clock)
 
@@ -195,8 +213,8 @@ func TestSchedulerSubmissionCanWaitUntilBeforeNextSlot(t *testing.T) {
 	clock := newFakeSchedulerClock(start)
 	submitter := newRecordingSchedulerSubmitter(clock)
 	services := []service.Service{
-		schedulerService("github", true),
-		schedulerService("cloudflare", true),
+		schedulerService("github"),
+		schedulerService("cloudflare"),
 	}
 	scheduler := newTestScheduler(t, submitter, services, 2*time.Second, clock)
 
@@ -225,8 +243,8 @@ func TestSchedulerAdmissionTimeoutSkipsOccurrenceAndContinues(t *testing.T) {
 	clock := newFakeSchedulerClock(start)
 	submitter := newRecordingSchedulerSubmitter(clock)
 	services := []service.Service{
-		schedulerService("github", true),
-		schedulerService("cloudflare", true),
+		schedulerService("github"),
+		schedulerService("cloudflare"),
 	}
 	scheduler := newTestScheduler(t, submitter, services, 2*time.Second, clock)
 
@@ -255,9 +273,9 @@ func TestSchedulerLastServiceDeadlineIsNextCycleFirstSlot(t *testing.T) {
 	clock := newFakeSchedulerClock(start)
 	submitter := newRecordingSchedulerSubmitter(clock)
 	services := []service.Service{
-		schedulerService("github", true),
-		schedulerService("cloudflare", true),
-		schedulerService("openai", true),
+		schedulerService("github"),
+		schedulerService("cloudflare"),
+		schedulerService("openai"),
 	}
 	scheduler := newTestScheduler(t, submitter, services, 9*time.Second, clock)
 
@@ -279,9 +297,9 @@ func TestSchedulerSkipsStaleOccurrence(t *testing.T) {
 	clock := newFakeSchedulerClock(start)
 	submitter := newRecordingSchedulerSubmitter(clock)
 	services := []service.Service{
-		schedulerService("github", true),
-		schedulerService("cloudflare", true),
-		schedulerService("openai", true),
+		schedulerService("github"),
+		schedulerService("cloudflare"),
+		schedulerService("openai"),
 	}
 	scheduler := newTestScheduler(t, submitter, services, 3*time.Second, clock)
 
@@ -303,10 +321,10 @@ func TestSchedulerSkipsMultipleMissedSlotsWithoutCatchUpBurst(t *testing.T) {
 	clock := newFakeSchedulerClock(start)
 	submitter := newRecordingSchedulerSubmitter(clock)
 	services := []service.Service{
-		schedulerService("github", true),
-		schedulerService("cloudflare", true),
-		schedulerService("openai", true),
-		schedulerService("slack", true),
+		schedulerService("github"),
+		schedulerService("cloudflare"),
+		schedulerService("openai"),
+		schedulerService("slack"),
 	}
 	scheduler := newTestScheduler(t, submitter, services, 4*time.Second, clock)
 
@@ -330,8 +348,8 @@ func TestSchedulerCancellationWhileWaitingStopsPromptly(t *testing.T) {
 	clock.sleepStarted = make(chan time.Time, 1)
 	submitter := newRecordingSchedulerSubmitter(clock)
 	services := []service.Service{
-		schedulerService("github", true),
-		schedulerService("cloudflare", true),
+		schedulerService("github"),
+		schedulerService("cloudflare"),
 	}
 	scheduler := newTestScheduler(t, submitter, services, 10*time.Second, clock)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -355,7 +373,7 @@ func TestSchedulerCancellationDuringBlockedSubmissionStopsPromptly(t *testing.T)
 
 		return ctx.Err()
 	})
-	scheduler := newTestScheduler(t, submitter, []service.Service{schedulerService("github", true)}, 10*time.Second, clock)
+	scheduler := newTestScheduler(t, submitter, []service.Service{schedulerService("github")}, 10*time.Second, clock)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := runScheduler(t, scheduler, ctx)
 
@@ -374,7 +392,7 @@ func TestSchedulerReturnsUnexpectedSubmitError(t *testing.T) {
 	submitter := SubmitterFunc(func(ctx context.Context, svc service.Service) error {
 		return wantErr
 	})
-	scheduler := newTestScheduler(t, submitter, []service.Service{schedulerService("github", true)}, 10*time.Second, clock)
+	scheduler := newTestScheduler(t, submitter, []service.Service{schedulerService("github")}, 10*time.Second, clock)
 
 	err := scheduler.Run(context.Background())
 	if !errors.Is(err, wantErr) {
@@ -388,7 +406,7 @@ func TestSchedulerReturnsDeadlineErrorUnrelatedToAdmissionWindow(t *testing.T) {
 	submitter := SubmitterFunc(func(ctx context.Context, svc service.Service) error {
 		return context.DeadlineExceeded
 	})
-	scheduler := newTestScheduler(t, submitter, []service.Service{schedulerService("github", true)}, 10*time.Second, clock)
+	scheduler := newTestScheduler(t, submitter, []service.Service{schedulerService("github")}, 10*time.Second, clock)
 
 	err := scheduler.Run(context.Background())
 	if !errors.Is(err, context.DeadlineExceeded) {
@@ -406,7 +424,7 @@ func TestSchedulerSecondRunWhileActiveReturnsError(t *testing.T) {
 
 		return ctx.Err()
 	})
-	scheduler := newTestScheduler(t, submitter, []service.Service{schedulerService("github", true)}, 10*time.Second, clock)
+	scheduler := newTestScheduler(t, submitter, []service.Service{schedulerService("github")}, 10*time.Second, clock)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := runScheduler(t, scheduler, ctx)
 	waitClosed(t, blockStarted, "blocked submission")
@@ -425,7 +443,7 @@ func TestSchedulerSecondRunAfterTerminationReturnsError(t *testing.T) {
 	start := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
 	clock := newFakeSchedulerClock(start)
 	submitter := newRecordingSchedulerSubmitter(clock)
-	scheduler := newTestScheduler(t, submitter, []service.Service{schedulerService("github", true)}, 10*time.Second, clock)
+	scheduler := newTestScheduler(t, submitter, []service.Service{schedulerService("github")}, 10*time.Second, clock)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -546,17 +564,17 @@ func assertCallTimes(t *testing.T, calls []schedulerSubmission, want []time.Time
 func schedulerServices(count int) []service.Service {
 	services := make([]service.Service, 0, count)
 	for index := range count {
-		services = append(services, schedulerService(fmt.Sprintf("service-%02d", index), true))
+		services = append(services, schedulerService(fmt.Sprintf("service-%02d", index)))
 	}
 
 	return services
 }
 
-func schedulerService(id string, enabled bool) service.Service {
+func schedulerService(id string) service.Service {
 	return service.Service{
 		ID:       id,
 		CheckURL: "https://example.test/" + id,
-		Enabled:  enabled,
+		Enabled:  true,
 	}
 }
 
@@ -802,4 +820,10 @@ func (c *fakeDeadlineContext) cancel(err error) {
 		c.mu.Unlock()
 		close(c.done)
 	})
+}
+
+func TestSchedulerRejectsAllDisabledCatalogue(t *testing.T) {
+	if _, err := NewScheduler(SubmitterFunc(func(context.Context, service.Service) error { return nil }), []service.Service{{ID: "disabled", Enabled: false}}, 15*time.Second); err == nil {
+		t.Fatal("expected no enabled services")
+	}
 }

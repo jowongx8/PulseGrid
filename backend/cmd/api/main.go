@@ -79,7 +79,7 @@ func run(ctx context.Context, logger *slog.Logger) (retErr error) {
 	if err != nil {
 		return fmt.Errorf("create current status query: %w", err)
 	}
-	incidentsQuery, err := app.NewIncidentsQuery(incidentStore)
+	incidentsQuery, err := app.NewIncidentsQuery(incidentStore, services)
 	if err != nil {
 		return fmt.Errorf("create incidents query: %w", err)
 	}

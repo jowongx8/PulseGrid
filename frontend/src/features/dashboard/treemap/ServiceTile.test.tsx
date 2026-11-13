@@ -1,5 +1,5 @@
 import userEvent from '@testing-library/user-event'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import type { ServiceDTO, ServiceState } from '@/data/contracts'
 import { makeService } from '@/test/services'
@@ -22,6 +22,48 @@ function renderTile(width: number, height: number, service: ServiceDTO = makeSer
 }
 
 describe('ServiceTile', () => {
+  it.each(['spotify', 'instagram'])('shows %s in compact and large tiles', (id) => {
+    const service = makeService(id, 'up')
+    const { container, unmount } = renderTile(80, 60, service)
+    expect(container.querySelector('img')).toHaveAttribute('src', `/logos/${id}.svg`)
+    unmount()
+    const large = renderTile(150, 100, service)
+    expect(large.container.querySelector('img')).toHaveAttribute('src', `/logos/${id}.svg`)
+  })
+
+  it('keeps click and keyboard activation after a logo fails', async () => {
+    const user = userEvent.setup()
+    const onSelect = vi.fn()
+    const { container } = renderTile(150, 100, { ...makeService('github', 'down'), name: 'GitHub' }, onSelect)
+    const button = screen.getByRole('button', { name: 'GitHub: Down' })
+    expect(container.querySelector('img')).toHaveAttribute('src', '/logos/github.svg')
+    await user.click(button)
+    fireEvent.error(container.querySelector('img')!)
+    expect(container.querySelector('[data-service-identity="monogram"]')).toHaveTextContent('GI')
+    await user.keyboard('{Enter} ')
+    expect(onSelect).toHaveBeenCalledTimes(3)
+    expect(onSelect).toHaveBeenLastCalledWith('github', button)
+    expect(button.closest('li')).toHaveAttribute('data-status', 'down')
+  })
+
+  it.each([
+    [200, 180, true], [96, 74, true], [80, 60, true], [58, 40, false],
+    [50, 32, false], [30, 30, false], [20, 20, false], [100, 29, false],
+    [300, 40, false], [40, 300, false],
+  ])('fits or omits the logo in a %s × %s tile', (width, height, visible) => {
+    const { container } = renderTile(width, height, makeService('github', 'up'))
+    const image = container.querySelector('img')
+    expect(Boolean(image)).toBe(visible)
+    if (image) {
+      expect(image).toHaveAttribute('src', '/logos/github.svg')
+      const size = Number.parseFloat(image.parentElement!.style.width)
+      expect(size).toBeGreaterThanOrEqual(20)
+      expect(size).toBeLessThanOrEqual(Math.min(64, width - 11, height - 30))
+      expect(image.parentElement!.style.height).toBe(`${size}px`)
+    }
+    expect(screen.getByRole('button')).toHaveAccessibleName('Service github: Operational')
+  })
+
   it('activates the same stable service ID with Enter and Space', async () => {
     const user = userEvent.setup()
     const onSelect = vi.fn()
@@ -55,45 +97,43 @@ describe('ServiceTile', () => {
     expect(tile).not.toHaveAttribute('tabindex')
   })
 
-  it('uses identity/status instead of a meaningless name at the minimum Medium size', () => {
-    const { container } = renderTile(58, 40)
-    expect(screen.queryByText('Service example')).not.toBeInTheDocument()
-    expect(container.querySelector('[data-service-identity]')).toBeInTheDocument()
-    expect(container.querySelector('svg')).toBeInTheDocument()
-    expect(screen.queryByText('Operational')).not.toBeInTheDocument()
+  it('centers a shared identity above the name as a balanced group', () => {
+    const { container } = renderTile(150, 100, { ...makeService('github', 'up'), name: 'GitHub' })
+    const identity = container.querySelector('[data-service-identity]')!
+    expect(identity.parentElement).toHaveClass('flex-col', 'items-center', 'justify-center')
+    expect(identity.nextElementSibling).toHaveTextContent('GitHub')
+    expect(screen.getByRole('button')).toHaveClass('text-center')
   })
 
-  it('keeps the Medium monogram when both rows fit', () => {
-    const { container } = renderTile(80, 60)
-    expect(container.querySelector('[data-service-identity]')).toBeInTheDocument()
+  it.each([[58, 40], [50, 32], [300, 29]])('prioritizes the name over a logo at %s × %s', (width, height) => {
+    const { container } = renderTile(width, height)
     expect(screen.getByText('Service example')).toBeInTheDocument()
-    expect(screen.queryByText('Operational')).not.toBeInTheDocument()
+    expect(container.querySelector('[data-service-identity]')).toBeNull()
   })
 
-  it.each<[number, boolean]>([[30, false], [50, true]])('fits Small content at width %s', (width, monogram) => {
-    const { container } = renderTile(width, 32)
-    expect(Boolean(container.querySelector('[data-service-identity]'))).toBe(monogram)
-    expect(container.querySelector('svg')).toBeInTheDocument()
-    expect(screen.queryByText('Service example')).not.toBeInTheDocument()
+  it('keeps short names readable even in narrow tiles', () => {
+    const { container } = renderTile(30, 30, { ...makeService('x', 'up'), name: 'X' })
+    expect(screen.getByText('X')).toHaveStyle({ fontSize: '11px' })
+    expect(container.querySelector('[data-service-identity]')).toBeNull()
   })
 
-  it.each([
-    [78, 40, false], [79, 40, true], // Compact Medium name: 40px after padding, gap and icon.
-    [68, 32, false], [69, 32, true], // Small name: reduced padding, same readable width.
-    [60, 57, false], [61, 58, true], // Medium two-row layout also needs readable width and height.
-  ])('fits a readable name at %s × %s: %s', (width, height, visible) => {
-    renderTile(width, height)
-    expect(Boolean(screen.queryByText('Service example'))).toBe(visible)
-    expect(screen.getByRole('button')).toHaveAccessibleName('Service example: Operational')
+  it('uses the same centered placement for missing logos', () => {
+    const { container } = renderTile(150, 100)
+    const identity = container.querySelector('[data-service-identity="monogram"]')!
+    expect(identity.parentElement).toHaveClass('items-center', 'justify-center')
+    expect(identity.nextElementSibling).toHaveTextContent('Service example')
   })
 
-  it.each([
-    [96, 74, 12], [79, 40, 11], [131, 40, 11.5], [180, 40, 12], [100, 32, 11],
-  ])('bounds the %s × %s name font to %spx without text measurement', (width, height, fontSize) => {
-    renderTile(width, height)
-    const name = screen.getByText('Service example')
-    expect(name).toHaveClass('truncate')
-    expect(name).toHaveStyle({ fontSize: `${fontSize}px` })
+  it('grows logos with available dimensions and caps their size', () => {
+    const sizes = [[80, 60], [150, 100], [200, 180], [400, 400]].map(([width, height]) => {
+      const { container, unmount } = renderTile(width, height)
+      const size = Number.parseFloat((container.querySelector('[data-service-identity]') as HTMLElement).style.width)
+      unmount()
+      return size
+    })
+    expect(sizes[0]).toBeLessThan(sizes[1])
+    expect(sizes[1]).toBeLessThan(sizes[2])
+    expect(sizes[2]).toBe(sizes[3])
   })
 
   it.each(['up', 'down', 'unknown'] as const)('retains a bounded Tiny %s indicator and accessible identity', (state) => {

@@ -44,7 +44,6 @@ func NewCurrentStatusQuery(services []service.Service, statuses StatusSnapshotRe
 			enabledServices = append(enabledServices, svc)
 		}
 	}
-
 	return &CurrentStatusQuery{
 		services: enabledServices,
 		statuses: statuses,

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -180,6 +181,52 @@ func TestEventStreamHandlesPreStreamFailures(t *testing.T) {
 	}
 }
 
+func TestEventStreamClosedBrokerReturnsUnavailable(t *testing.T) {
+	broker := newHTTPTestBroker(t, 1)
+	broker.Close()
+	response := httptest.NewRecorder()
+	eventStreamHandler(broker).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/events", nil))
+	if response.Code != http.StatusServiceUnavailable || response.Flushed {
+		t.Fatalf("response = %d, flushed=%v; want 503 without stream flush", response.Code, response.Flushed)
+	}
+	if strings.Contains(response.Body.String(), ": connected") {
+		t.Fatal("unavailable stream sent connection comment")
+	}
+}
+
+func TestEventStreamInitialWriteAndFlushFailuresCloseSubscription(t *testing.T) {
+	for _, failWrite := range []bool{true, false} {
+		t.Run(fmt.Sprintf("write=%v", failWrite), func(t *testing.T) {
+			broker := newHTTPTestBroker(t, 1)
+			subscriber := &recordingEventSubscriber{broker: broker, subscriptions: make(chan *event.Subscription, 1)}
+			writer := &initialFailureStreamWriter{failWrite: failWrite}
+			done := make(chan struct{})
+			go func() {
+				eventStreamHandler(subscriber).ServeHTTP(writer, httptest.NewRequest(http.MethodGet, "/api/v1/events", nil))
+				close(done)
+			}()
+			waitHTTPTestSignal(t, done)
+			subscription := waitHTTPTestValue(t, subscriber.subscriptions)
+			assertEventChannelClosed(t, subscription.Events())
+		})
+	}
+}
+
+type initialFailureStreamWriter struct {
+	failWrite bool
+}
+
+func (*initialFailureStreamWriter) Header() http.Header { return make(http.Header) }
+func (*initialFailureStreamWriter) WriteHeader(int)     {}
+func (*initialFailureStreamWriter) Flush()              {}
+func (*initialFailureStreamWriter) FlushError() error   { return errors.New("initial flush failed") }
+func (w *initialFailureStreamWriter) Write(body []byte) (int, error) {
+	if w.failWrite {
+		return 0, errors.New("initial write failed")
+	}
+	return len(body), nil
+}
+
 func TestEventStreamRequiresFlushingBeforeSubscribing(t *testing.T) {
 	calls := 0
 	subscriber := eventSubscriberFunc(func() (*event.Subscription, error) {
@@ -352,6 +399,9 @@ func (w *blockingStreamWriter) Header() http.Header {
 func (*blockingStreamWriter) WriteHeader(int) {}
 
 func (w *blockingStreamWriter) Write(body []byte) (int, error) {
+	if string(body) == ": connected\n\n" {
+		return len(body), nil
+	}
 	w.writeOnce.Do(func() { close(w.writeStarted) })
 	<-w.releaseWrite
 	return len(body), nil
@@ -387,7 +437,10 @@ func (w *failingWriteStreamWriter) Header() http.Header {
 
 func (*failingWriteStreamWriter) WriteHeader(int) {}
 
-func (*failingWriteStreamWriter) Write([]byte) (int, error) {
+func (*failingWriteStreamWriter) Write(body []byte) (int, error) {
+	if string(body) == ": connected\n\n" {
+		return len(body), nil
+	}
 	return 0, errors.New("write failed")
 }
 
@@ -463,7 +516,14 @@ func openEventStream(t *testing.T, handler http.Handler) (*http.Response, *bufio
 		cancel()
 		_ = response.Body.Close()
 	})
-	return response, bufio.NewReader(response.Body), cancel
+	reader := bufio.NewReader(response.Body)
+	// Every successful stream starts with a comment, never a named/data event.
+	// This must arrive before the 5s request deadline, without a publication or
+	// the production 30s heartbeat. Subsequent tests read application records.
+	if got, want := readSSERecord(t, reader), []string{": connected"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("initial record = %#v, want comment-only %#v", got, want)
+	}
+	return response, reader, cancel
 }
 
 func readSSERecord(t *testing.T, reader *bufio.Reader) []string {

@@ -400,7 +400,7 @@ func newLiveStatusConsistencyHarness(t *testing.T) *liveStatusConsistencyHarness
 	if err != nil {
 		t.Fatal(err)
 	}
-	incidentQuery, err := NewIncidentsQuery(incidentStore)
+	incidentQuery, err := NewIncidentsQuery(incidentStore, []service.Service{svc})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -783,7 +783,13 @@ func newConsistencyIncidentStore(t *testing.T) (*sqlite.IncidentStore, *Incident
 		}
 	})
 	store := sqlite.NewIncidentStore(db)
-	query, err := NewIncidentsQuery(store)
+	services := []service.Service{}
+	for index := range publicIncidentTarget + 2 {
+		for _, prefix := range []string{"active", "resolved"} {
+			services = append(services, service.Service{ID: fmt.Sprintf("%s-%02d", prefix, index), Enabled: true})
+		}
+	}
+	query, err := NewIncidentsQuery(store, services)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -67,13 +67,15 @@ func TestParseOptionsRejectsInvalidValues(t *testing.T) {
 }
 
 func TestSelectServices(t *testing.T) {
+	disabled := testService("disabled")
+	disabled.Enabled = false
 	catalogue := []service.Service{
-		testService("github", true),
-		testService("instagram", true),
-		testService("disabled", false),
+		disabled,
+		testService("github"),
+		testService("instagram"),
 	}
 
-	t.Run("all enabled by default", func(t *testing.T) {
+	t.Run("all catalogue services", func(t *testing.T) {
 		selected, err := selectServices(catalogue, "")
 		if err != nil {
 			t.Fatalf("selectServices() returned error: %v", err)
@@ -86,7 +88,7 @@ func TestSelectServices(t *testing.T) {
 		}
 	})
 
-	t.Run("specific enabled service", func(t *testing.T) {
+	t.Run("specific catalogue service", func(t *testing.T) {
 		selected, err := selectServices(catalogue, "instagram")
 		if err != nil {
 			t.Fatalf("selectServices() returned error: %v", err)
@@ -97,20 +99,25 @@ func TestSelectServices(t *testing.T) {
 		}
 	})
 
+	t.Run("explicit disabled service", func(t *testing.T) {
+		selected, err := selectServices(catalogue, "disabled")
+		if err != nil || len(selected) != 1 || selected[0].Enabled {
+			t.Fatalf("explicit disabled probe = %v, %v", selected, err)
+		}
+	})
+	t.Run("all disabled default", func(t *testing.T) {
+		if _, err := selectServices([]service.Service{disabled}, ""); err == nil {
+			t.Fatal("expected no enabled services")
+		}
+	})
 	t.Run("unknown service", func(t *testing.T) {
 		if _, err := selectServices(catalogue, "missing"); err == nil {
 			t.Fatal("selectServices() returned nil error, want unknown service error")
 		}
 	})
 
-	t.Run("disabled service", func(t *testing.T) {
-		if _, err := selectServices(catalogue, "disabled"); err == nil {
-			t.Fatal("selectServices() returned nil error, want disabled service error")
-		}
-	})
-
-	t.Run("no enabled services", func(t *testing.T) {
-		if _, err := selectServices([]service.Service{testService("disabled", false)}, ""); err == nil {
+	t.Run("empty catalogue", func(t *testing.T) {
+		if _, err := selectServices(nil, ""); err == nil {
 			t.Fatal("selectServices() returned nil error, want no services error")
 		}
 	})
@@ -118,9 +125,9 @@ func TestSelectServices(t *testing.T) {
 
 func TestRunDiagnosticOneShot(t *testing.T) {
 	services := []service.Service{
-		testService("github", true),
-		testService("disabled", false),
-		testService("openai", true),
+		{ID: "disabled", Enabled: false},
+		testService("github"),
+		testService("openai"),
 	}
 
 	var calls []string
@@ -145,7 +152,7 @@ func TestRunDiagnosticOneShot(t *testing.T) {
 	}
 
 	if strings.Join(calls, ",") != "github,openai" {
-		t.Fatalf("calls = %v, want sequential enabled services", calls)
+		t.Fatalf("calls = %v, want sequential catalogue services", calls)
 	}
 
 	output := out.String()
@@ -169,8 +176,8 @@ func TestRunDiagnosticRepeatedStopsAfterCancellationAndPrintsPartialSummary(t *t
 	defer cancel()
 
 	services := []service.Service{
-		testService("github", true),
-		testService("openai", true),
+		testService("github"),
+		testService("openai"),
 	}
 
 	var calls []string
@@ -214,7 +221,7 @@ func TestRunDiagnosticRepeatedStopsAfterCancellationAndPrintsPartialSummary(t *t
 func TestRunRepeatedWaitsUntilNextRoundTarget(t *testing.T) {
 	start := time.Date(2026, 9, 15, 10, 0, 0, 0, time.UTC)
 	clock := newFakeClock(start)
-	services := []service.Service{testService("github", true)}
+	services := []service.Service{testService("github")}
 
 	var starts []time.Time
 	check := func(ctx context.Context, svc service.Service) monitoring.CheckResult {
@@ -254,7 +261,7 @@ func TestRunRepeatedWaitsUntilNextRoundTarget(t *testing.T) {
 func TestRunRepeatedSkipsMissedRoundTargetsAfterOverrun(t *testing.T) {
 	start := time.Date(2026, 9, 15, 10, 0, 0, 0, time.UTC)
 	clock := newFakeClock(start)
-	services := []service.Service{testService("github", true)}
+	services := []service.Service{testService("github")}
 	durations := []time.Duration{
 		5 * time.Second,
 		19 * time.Second,
@@ -304,7 +311,7 @@ func TestRunRepeatedSkipsMissedRoundTargetsAfterOverrun(t *testing.T) {
 func TestRunRepeatedDoesNotStartRoundAtDurationBoundary(t *testing.T) {
 	start := time.Date(2026, 9, 15, 10, 0, 0, 0, time.UTC)
 	clock := newFakeClock(start)
-	services := []service.Service{testService("github", true)}
+	services := []service.Service{testService("github")}
 
 	var starts []time.Time
 	check := func(ctx context.Context, svc service.Service) monitoring.CheckResult {
@@ -347,7 +354,7 @@ func TestRunRepeatedWaitingHonorsCancellation(t *testing.T) {
 	clock.cancel = cancel
 	defer cancel()
 
-	services := []service.Service{testService("github", true)}
+	services := []service.Service{testService("github")}
 	var calls int
 	check := func(ctx context.Context, svc service.Service) monitoring.CheckResult {
 		calls++
@@ -383,7 +390,7 @@ func TestRunRepeatedWaitingHonorsCancellation(t *testing.T) {
 }
 
 func TestSummaryAggregation(t *testing.T) {
-	summary := newSummary([]service.Service{testService("github", true)})
+	summary := newSummary([]service.Service{testService("github")})
 	summary.record(monitoring.CheckResult{
 		ServiceID:  "github",
 		Duration:   100 * time.Millisecond,
@@ -537,7 +544,7 @@ func (clock *fakeClock) Advance(duration time.Duration) {
 	clock.now = clock.now.Add(duration)
 }
 
-func testService(id string, enabled bool) service.Service {
+func testService(id string) service.Service {
 	return service.Service{
 		ID:         id,
 		Name:       "Test " + id,
@@ -545,7 +552,7 @@ func testService(id string, enabled bool) service.Service {
 		WebsiteURL: "https://example.com",
 		CheckURL:   "https://example.com",
 		Weight:     1,
-		Enabled:    enabled,
+		Enabled:    true,
 	}
 }
 
@@ -554,3 +561,19 @@ const (
 	httpStatusForbidden          = 403
 	httpStatusServiceUnavailable = 503
 )
+
+func TestRunDiagnosticExplicitlyChecksDisabledService(t *testing.T) {
+	svc := testService("disabled")
+	svc.Enabled = false
+	calls := 0
+	err := runDiagnostic(context.Background(), options{serviceID: svc.ID, interval: defaultInterval}, []service.Service{svc}, func(_ context.Context, got service.Service) monitoring.CheckResult {
+		calls++
+		if got.ID != svc.ID || got.Enabled {
+			t.Fatalf("unexpected explicit probe: %+v", got)
+		}
+		return monitoring.CheckResult{ServiceID: got.ID, CheckedAt: time.Now(), StatusCode: 200}
+	}, io.Discard)
+	if err != nil || calls != 1 {
+		t.Fatalf("disabled probe: calls=%d, err=%v", calls, err)
+	}
+}

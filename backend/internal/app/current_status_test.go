@@ -35,9 +35,9 @@ func TestNewCurrentStatusQueryRequiresSnapshotReader(t *testing.T) {
 func TestCurrentStatusQueryReturnsAllUnobservedServicesInConfigurationOrder(t *testing.T) {
 	reader := &fakeStatusSnapshotReader{snapshot: status.Snapshot{}}
 	services := []service.Service{
-		currentStatusService("github", "GitHub", service.CategoryDeveloperCloud, "https://github.com", 10, true),
-		currentStatusService("openai", "OpenAI", service.CategoryAI, "https://openai.com", 9, true),
-		currentStatusService("discord", "Discord", service.CategoryCommunication, "https://discord.com", 8, true),
+		currentStatusService("github", "GitHub", service.CategoryDeveloperCloud, "https://github.com", 10),
+		currentStatusService("openai", "OpenAI", service.CategoryAI, "https://openai.com", 9),
+		currentStatusService("discord", "Discord", service.CategoryCommunication, "https://discord.com", 8),
 	}
 	query := newCurrentStatusQuery(t, services, reader)
 
@@ -88,10 +88,10 @@ func TestCurrentStatusQueryComposesMixedObservedStates(t *testing.T) {
 		"discord": {State: status.StatusUnknown, LastCheckedAt: unknownAt},
 	}}
 	services := []service.Service{
-		currentStatusService("github", "GitHub", service.CategoryDeveloperCloud, "https://github.com", 10, true),
-		currentStatusService("openai", "OpenAI", service.CategoryAI, "https://openai.com", 9, true),
-		currentStatusService("discord", "Discord", service.CategoryCommunication, "https://discord.com", 8, true),
-		currentStatusService("fourth", "Fourth", service.CategoryCommerce, "https://fourth.example", 6, true),
+		currentStatusService("github", "GitHub", service.CategoryDeveloperCloud, "https://github.com", 10),
+		currentStatusService("openai", "OpenAI", service.CategoryAI, "https://openai.com", 9),
+		currentStatusService("discord", "Discord", service.CategoryCommunication, "https://discord.com", 8),
+		currentStatusService("fourth", "Fourth", service.CategoryCommerce, "https://fourth.example", 6),
 	}
 	query := newCurrentStatusQuery(t, services, reader)
 
@@ -114,30 +114,20 @@ func TestCurrentStatusQueryComposesMixedObservedStates(t *testing.T) {
 	}
 }
 
-func TestCurrentStatusQueryExcludesDisabledServices(t *testing.T) {
+func TestCurrentStatusQueryExcludesRemovedServices(t *testing.T) {
 	at := time.Date(2026, 9, 21, 11, 0, 0, 0, time.UTC)
-	reader := &fakeStatusSnapshotReader{snapshot: status.Snapshot{
-		"disabled-a": {State: status.StatusDown, LastCheckedAt: at},
-		"enabled":    {State: status.StatusUp, LastCheckedAt: at},
-		"disabled-b": {State: status.StatusUnknown, LastCheckedAt: at},
-	}}
-	services := []service.Service{
-		currentStatusService("disabled-a", "Disabled A", service.CategoryAI, "https://a.example", 1, false),
-		currentStatusService("enabled", "Enabled", service.CategoryCommerce, "https://enabled.example", 7, true),
-		currentStatusService("disabled-b", "Disabled B", service.CategoryGaming, "https://b.example", 2, false),
-	}
-	query := newCurrentStatusQuery(t, services, reader)
-
+	reader := &fakeStatusSnapshotReader{snapshot: status.Snapshot{"removed": {State: status.StatusDown, LastCheckedAt: at}, "present": {State: status.StatusUp, LastCheckedAt: at}}}
+	query := newCurrentStatusQuery(t, []service.Service{currentStatusService("present", "Present", service.CategoryCommerce, "https://present.example", 7)}, reader)
 	got := query.Execute()
-	if len(got) != 1 || got[0].ID != "enabled" {
-		t.Fatalf("Execute() = %+v, want enabled service only", got)
+	if len(got) != 1 || got[0].ID != "present" {
+		t.Fatalf("unexpected catalogue membership: %+v", got)
 	}
 }
 
 func TestCurrentStatusQueryCallsSnapshotOncePerExecution(t *testing.T) {
 	reader := &fakeStatusSnapshotReader{snapshot: status.Snapshot{}}
 	query := newCurrentStatusQuery(t, []service.Service{
-		currentStatusService("github", "GitHub", service.CategoryDeveloperCloud, "https://github.com", 10, true),
+		currentStatusService("github", "GitHub", service.CategoryDeveloperCloud, "https://github.com", 10),
 	}, reader)
 
 	query.Execute()
@@ -153,13 +143,11 @@ func TestCurrentStatusQueryCallsSnapshotOncePerExecution(t *testing.T) {
 func TestCurrentStatusQueryOwnsServiceConfiguration(t *testing.T) {
 	reader := &fakeStatusSnapshotReader{snapshot: status.Snapshot{}}
 	services := []service.Service{
-		currentStatusService("github", "GitHub", service.CategoryDeveloperCloud, "https://github.com", 10, true),
-		currentStatusService("disabled", "Disabled", service.CategoryAI, "https://disabled.example", 1, false),
+		currentStatusService("github", "GitHub", service.CategoryDeveloperCloud, "https://github.com", 10),
 	}
 	query := newCurrentStatusQuery(t, services, reader)
 
-	services[0] = currentStatusService("mutated", "Mutated", service.CategoryGaming, "https://mutated.example", 2, true)
-	services[1].Enabled = true
+	services[0] = currentStatusService("mutated", "Mutated", service.CategoryGaming, "https://mutated.example", 2)
 
 	got := query.Execute()
 	if len(got) != 1 {
@@ -184,7 +172,7 @@ func TestCurrentStatusQueryResultsAreIndependent(t *testing.T) {
 		"github": {State: status.StatusUp, LastCheckedAt: checkedAt},
 	}}
 	query := newCurrentStatusQuery(t, []service.Service{
-		currentStatusService("github", "GitHub", service.CategoryDeveloperCloud, "https://github.com", 10, true),
+		currentStatusService("github", "GitHub", service.CategoryDeveloperCloud, "https://github.com", 10),
 	}, reader)
 
 	first := query.Execute()
@@ -203,11 +191,9 @@ func TestCurrentStatusQueryResultsAreIndependent(t *testing.T) {
 	}
 }
 
-func TestCurrentStatusQueryAcceptsNoEnabledServices(t *testing.T) {
+func TestCurrentStatusQueryAcceptsEmptyCatalogue(t *testing.T) {
 	reader := &fakeStatusSnapshotReader{snapshot: status.Snapshot{}}
-	query := newCurrentStatusQuery(t, []service.Service{
-		currentStatusService("disabled", "Disabled", service.CategoryAI, "https://disabled.example", 1, false),
-	}, reader)
+	query := newCurrentStatusQuery(t, []service.Service{}, reader)
 
 	got := query.Execute()
 	if got == nil || len(got) != 0 {
@@ -225,8 +211,8 @@ func TestCurrentStatusQuerySupportsConcurrentExecution(t *testing.T) {
 		"github": {State: status.StatusUp, LastCheckedAt: checkedAt},
 	}}
 	query := newCurrentStatusQuery(t, []service.Service{
-		currentStatusService("github", "GitHub", service.CategoryDeveloperCloud, "https://github.com", 10, true),
-		currentStatusService("openai", "OpenAI", service.CategoryAI, "https://openai.com", 9, true),
+		currentStatusService("github", "GitHub", service.CategoryDeveloperCloud, "https://github.com", 10),
+		currentStatusService("openai", "OpenAI", service.CategoryAI, "https://openai.com", 9),
 	}, reader)
 
 	start := make(chan struct{})
@@ -274,7 +260,6 @@ func currentStatusService(
 	category service.Category,
 	websiteURL string,
 	weight int,
-	enabled bool,
 ) service.Service {
 	return service.Service{
 		ID:         id,
@@ -283,7 +268,7 @@ func currentStatusService(
 		WebsiteURL: websiteURL,
 		CheckURL:   "https://check.example",
 		Weight:     weight,
-		Enabled:    enabled,
+		Enabled:    true,
 	}
 }
 

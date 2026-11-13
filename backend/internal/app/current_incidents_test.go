@@ -4,32 +4,36 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/jowongx8/backend/internal/incident"
+	"github.com/jowongx8/backend/internal/service"
 )
 
 type fakeIncidentFeedReader struct {
-	active   []incident.Incident
-	resolved []incident.Incident
-	err      error
-	ctx      context.Context
-	target   int
-	calls    int
+	active     []incident.Incident
+	resolved   []incident.Incident
+	err        error
+	ctx        context.Context
+	target     int
+	calls      int
+	serviceIDs []string
 }
 
-func (f *fakeIncidentFeedReader) ListFeed(ctx context.Context, target int) ([]incident.Incident, []incident.Incident, error) {
+func (f *fakeIncidentFeedReader) ListFeed(ctx context.Context, target int, serviceIDs []string) ([]incident.Incident, []incident.Incident, error) {
 	f.calls++
 	f.ctx = ctx
 	f.target = target
+	f.serviceIDs = append([]string(nil), serviceIDs...)
 	return f.active, f.resolved, f.err
 }
 
 func TestNewIncidentsQueryRequiresReader(t *testing.T) {
-	query, err := NewIncidentsQuery(nil)
+	query, err := NewIncidentsQuery(nil, nil)
 	if err == nil || query != nil {
-		t.Fatalf("NewIncidentsQuery(nil) = (%v, %v), want nil query and error", query, err)
+		t.Fatalf("NewIncidentsQuery(nil, nil) = (%v, %v), want nil query and error", query, err)
 	}
 }
 
@@ -59,6 +63,28 @@ func TestIncidentsQueryPassesContextAndTargetOnce(t *testing.T) {
 	}
 	if reader.calls != 1 || reader.ctx != ctx || reader.target != publicIncidentTarget {
 		t.Fatalf("ListFeed calls = %d, context match = %t, target = %d; want 1, true, %d", reader.calls, reader.ctx == ctx, reader.target, publicIncidentTarget)
+	}
+}
+
+func TestIncidentsQuerySnapshotsEnabledCatalogueMembership(t *testing.T) {
+	services := []service.Service{
+		{ID: "disabled", Enabled: false},
+		{ID: "github", Enabled: true},
+		{ID: "openai", Enabled: true},
+	}
+	reader := &fakeIncidentFeedReader{}
+	query, err := NewIncidentsQuery(reader, services)
+	if err != nil {
+		t.Fatal(err)
+	}
+	services[0].Enabled = true
+	services[1].ID = "changed"
+	services[2].Enabled = false
+	if _, err := query.Execute(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(reader.serviceIDs, []string{"github", "openai"}) {
+		t.Fatalf("feed membership = %v, want original catalogue IDs", reader.serviceIDs)
 	}
 }
 
@@ -153,9 +179,13 @@ func TestIncidentsQueryReturnsIndependentResolutionTimes(t *testing.T) {
 
 type incidentContextKey struct{}
 
-func newIncidentsQuery(t *testing.T, reader IncidentFeedReader) *IncidentsQuery {
+func newIncidentsQuery(t *testing.T, reader *fakeIncidentFeedReader) *IncidentsQuery {
 	t.Helper()
-	query, err := NewIncidentsQuery(reader)
+	services := []service.Service{{ID: "github", Enabled: true}}
+	for _, value := range append(append([]incident.Incident(nil), reader.active...), reader.resolved...) {
+		services = append(services, service.Service{ID: value.ServiceID, Enabled: true})
+	}
+	query, err := NewIncidentsQuery(reader, services)
 	if err != nil {
 		t.Fatal(err)
 	}

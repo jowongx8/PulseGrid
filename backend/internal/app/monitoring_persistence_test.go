@@ -11,10 +11,106 @@ import (
 	"time"
 
 	"github.com/jowongx8/backend/internal/event"
+	"github.com/jowongx8/backend/internal/incident"
 	"github.com/jowongx8/backend/internal/monitoring"
 	"github.com/jowongx8/backend/internal/service"
 	"github.com/jowongx8/backend/internal/status"
+	"github.com/jowongx8/backend/internal/storage/sqlite"
 )
+
+func TestCatalogueResultPipelinePersistsHistoryAndIncidentRecovery(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	db, incidents := openRestartTestStore(t)
+	services := service.Catalogue()
+	var ids []string
+	for _, svc := range services {
+		ids = append(ids, svc.ID)
+	}
+	tracker, err := status.NewTracker(ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker, err := event.NewBroker(event.DefaultSubscriberBufferSize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer broker.Close()
+	base := time.Date(2026, 11, 12, 12, 0, 0, 123456000, time.UTC)
+	results := make(chan monitoring.CheckResult, 4)
+	fed := make(chan struct{})
+	go func() {
+		defer close(fed)
+		defer close(results)
+		for cycle := range 6 {
+			for index, svc := range services {
+				code := 200
+				if index == 0 && cycle >= 1 && cycle <= 3 {
+					code = 503
+				}
+				select {
+				case results <- monitoring.CheckResult{ServiceID: svc.ID, CheckedAt: base.Add(time.Duration(cycle) * 15 * time.Second), Duration: time.Millisecond, StatusCode: code}:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+	defer func() { cancel(); <-fed }()
+	err = processResults(ctx, results, sqlite.NewCheckResultStore(db), tracker, NewIncidentProcessor(incident.NewLifecycle(), incidents), broker, &outstandingSubmitter{outstanding: map[string]struct{}{}})
+	if err == nil || !strings.Contains(err.Error(), "results channel closed") {
+		t.Fatalf("batch termination = %v, want exhausted input after processing", err)
+	}
+	rows, err := db.Query("SELECT service_id, COUNT(*) FROM check_results GROUP BY service_id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	counts := make(map[string]int)
+	for rows.Next() {
+		var id string
+		var count int
+		if err := rows.Scan(&id, &count); err != nil {
+			t.Fatal(err)
+		}
+		counts[id] = count
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(counts) != len(services) {
+		t.Fatalf("persisted membership = %v, want all catalogue services", counts)
+	}
+	for _, svc := range services {
+		if counts[svc.ID] != 6 {
+			t.Errorf("%s persisted %d results, want six complete cycles", svc.ID, counts[svc.ID])
+		}
+	}
+	query, err := NewIncidentsQuery(incidents, services)
+	if err != nil {
+		t.Fatal(err)
+	}
+	feed, err := query.Execute(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(feed.Active) != 0 || len(feed.Resolved) != 1 || feed.Resolved[0].ServiceID != services[0].ID ||
+		!feed.Resolved[0].StartedAt.Equal(base.Add(45*time.Second)) || feed.Resolved[0].ResolvedAt == nil || !feed.Resolved[0].ResolvedAt.Equal(base.Add(75*time.Second)) {
+		t.Fatalf("incident lifecycle under catalogue load = %+v, want one canonical resolution", feed)
+	}
+	view, err := NewCurrentStatusQuery(services, tracker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, svc := range view.Execute() {
+		if svc.Status.State != status.StatusUp {
+			t.Errorf("%s final state = %s, want UP after recovery", svc.ID, svc.Status.State)
+		}
+	}
+}
 
 func TestProcessResultsSavesBeforeTrackerAndReleasesOutstanding(t *testing.T) {
 	svc := service.Service{ID: "example", Enabled: true}

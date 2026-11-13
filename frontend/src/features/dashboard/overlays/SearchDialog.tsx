@@ -70,7 +70,7 @@ export function SearchDialog({ services, onSelect }: { services: readonly Servic
             onClick={() => onSelect(service.id)}
             className={`flex cursor-pointer items-center gap-2.5 px-4 py-2.5 ${active?.id === service.id ? 'bg-muted' : ''}`}
           >
-            <ServiceIdentity name={service.name} size={20} />
+            <ServiceIdentity serviceId={service.id} name={service.name} size={20} />
             <div className="min-w-0 flex-1">
               <p className="truncate text-xs font-medium">{service.name}</p>
               <p className="truncate text-[10px] leading-4 text-muted-foreground">{getCategoryLabel(service.category)}</p>
