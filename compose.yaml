@@ -1,0 +1,29 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    ports:
+      - "127.0.0.1:${PULSEGRID_BACKEND_PORT:-8081}:8080"
+    volumes:
+      - sqlite-data:/app/data
+    stop_grace_period: 20s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    ports:
+      - "127.0.0.1:${PULSEGRID_FRONTEND_PORT:-5174}:5173"
+    environment:
+      DEV_API_PROXY_TARGET: http://backend:8080
+      DEV_USE_POLLING: "${DEV_USE_POLLING:-false}"
+    volumes:
+      - ./frontend/src:/app/src:ro
+      - ./frontend/public:/app/public:ro
+      - ./frontend/index.html:/app/index.html:ro
+      - ./frontend/vite.config.ts:/app/vite.config.ts:ro
+    depends_on:
+      - backend
+
+volumes:
+  sqlite-data:

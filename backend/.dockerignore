@@ -1,0 +1,9 @@
+# Only inputs needed to build the API belong in the build context.
+*
+!go.mod
+!go.sum
+!cmd/
+!internal/
+**/.env*
+**/*.db
+**/*.db-*
