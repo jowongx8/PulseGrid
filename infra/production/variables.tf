@@ -7,3 +7,13 @@ variable "expected_aws_account_id" {
     error_message = "expected_aws_account_id must be a 12-digit AWS account ID."
   }
 }
+
+variable "backend_origin_hostname" {
+  description = "Registered lowercase DuckDNS hostname pointing to the existing backend Elastic IP, without a scheme, path, port, or trailing dot."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.duckdns\\.org$", var.backend_origin_hostname))
+    error_message = "backend_origin_hostname must be a bare lowercase hostname such as <registered-name>.duckdns.org, with a valid 1-63 character DNS label."
+  }
+}

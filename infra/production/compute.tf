@@ -1,8 +1,11 @@
+data "aws_ec2_managed_prefix_list" "cloudfront_origin_facing" {
+  name = "com.amazonaws.global.cloudfront.origin-facing"
+}
+
 resource "aws_security_group" "backend" {
   name        = "pulsegrid-production-backend"
   description = "Session Manager administration with no inbound access"
   vpc_id      = aws_vpc.production.id
-  ingress     = []
 
   tags = {
     Name = "pulsegrid-production-backend"
@@ -14,6 +17,32 @@ resource "aws_vpc_security_group_egress_rule" "backend_ipv4" {
   description       = "Allow outbound IPv4 traffic"
   ip_protocol       = "-1"
   cidr_ipv4         = "0.0.0.0/0"
+}
+
+resource "aws_vpc_security_group_ingress_rule" "backend_http" {
+  security_group_id = aws_security_group.backend.id
+  description       = "HTTP redirects and ACME HTTP-01 validation"
+  ip_protocol       = "tcp"
+  from_port         = 80
+  to_port           = 80
+  cidr_ipv4         = "0.0.0.0/0"
+
+  tags = {
+    Name = "pulsegrid-production-backend-http"
+  }
+}
+
+resource "aws_vpc_security_group_ingress_rule" "backend_cloudfront_https" {
+  security_group_id = aws_security_group.backend.id
+  description       = "HTTPS from CloudFront origin-facing IPv4 servers"
+  ip_protocol       = "tcp"
+  from_port         = 443
+  to_port           = 443
+  prefix_list_id    = data.aws_ec2_managed_prefix_list.cloudfront_origin_facing.id
+
+  tags = {
+    Name = "pulsegrid-production-backend-cloudfront-https"
+  }
 }
 
 resource "aws_instance" "backend" {
