@@ -1,0 +1,6 @@
+# actionlint 1.7.12 predates this existing GitHub-hosted runner label.
+# https://github.com/actions/runner-images/issues/14747
+# This extends only the linter's label catalog; it does not select self-hosting.
+self-hosted-runner:
+  labels:
+    - ubuntu-26.04

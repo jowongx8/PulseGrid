@@ -1,0 +1,209 @@
+name: Frontend deployment
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/frontend-ci.yml'
+      - '.github/workflows/frontend-deploy.yml'
+      - '.github/workflows/pr-ci.yml'
+      - '.github/actionlint.yaml'
+      - '.github/scripts/check-workflows.sh'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    uses: ./.github/workflows/frontend-ci.yml
+    with:
+      export_build: true
+
+  deploy:
+    needs: validate
+    if: >-
+      github.ref == 'refs/heads/main' && needs.validate.result == 'success' &&
+      needs.validate.outputs.validation_result == 'success'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    environment:
+      name: production
+      url: https://d248st025veyuf.cloudfront.net
+    concurrency:
+      group: pulsegrid-production-frontend
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: bash
+    env:
+      AWS_MAX_ATTEMPTS: '3'
+      AWS_PAGER: ''
+      FRONTEND_BUCKET: pulsegrid-production-frontend-852000185801-ap-southeast-2
+      CLOUDFRONT_DISTRIBUTION: E2DFQPD7D371GE
+      PUBLIC_URL: https://d248st025veyuf.cloudfront.net
+    steps:
+      # Environment variables become available after entering this job.
+      # Keep this check at step level; validation never receives production secrets.
+      - name: Evaluate production deployment switch
+        id: switch
+        env:
+          FRONTEND_DEPLOY_ENABLED: ${{ vars.FRONTEND_DEPLOY_ENABLED }}
+        run: |
+          if [[ "$FRONTEND_DEPLOY_ENABLED" == 'true' ]]; then
+            echo 'enabled=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'enabled=false' >> "$GITHUB_OUTPUT"
+            echo 'Frontend deployment disabled; no AWS authentication or publication performed.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Check production configuration and validated artifact ID
+        if: steps.switch.outputs.enabled == 'true'
+        env:
+          ARTIFACT_ID: ${{ needs.validate.outputs.artifact_id }}
+          AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+        run: |
+          if [[ "$AWS_ACCOUNT_ID" != '852000185801' || "$AWS_REGION" != 'ap-southeast-2' ||
+                "$AWS_DEPLOY_ROLE_ARN" != 'arn:aws:iam::852000185801:role/pulsegrid-production-deployment' ]]; then
+            echo '::error::Unexpected production account, region or deployment role.'
+            exit 1
+          fi
+          if [[ ! "$ARTIFACT_ID" =~ ^[0-9]+$ ]]; then
+            echo '::error::Validated artifact ID is missing or invalid; rerun validation.'
+            exit 1
+          fi
+
+      - name: Download this run's validated build
+        if: steps.switch.outputs.enabled == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ needs.validate.outputs.artifact_id }}
+          path: dist
+          merge-multiple: true
+          digest-mismatch: error
+
+      - name: Validate build output before publication
+        if: steps.switch.outputs.enabled == 'true'
+        run: |
+          test -s dist/index.html
+          test -d dist/assets
+          test -n "$(find dist/assets -type f -name '*.js' -print -quit)"
+          test -n "$(find dist/assets -type f -name '*.css' -print -quit)"
+
+      - name: Assume restricted production deployment role
+        if: steps.switch.outputs.enabled == 'true'
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          allowed-account-ids: '852000185801'
+          role-skip-session-tagging: true
+          role-duration-seconds: 1800
+          role-session-name: pulsegrid-${{ github.run_id }}-${{ github.run_attempt }}
+          force-skip-oidc: true
+          unset-current-credentials: true
+          translate-env-variables: false
+          action-timeout-s: 120
+
+      - name: Verify assumed role, account and region
+        if: steps.switch.outputs.enabled == 'true'
+        run: |
+          if [[ "$AWS_REGION" != 'ap-southeast-2' || "$AWS_DEFAULT_REGION" != 'ap-southeast-2' ]]; then
+            echo '::error::Unexpected AWS region after authentication.'
+            exit 1
+          fi
+          identity=$(aws sts get-caller-identity --query '[Account,Arn]' --output text \
+            --cli-connect-timeout 10 --cli-read-timeout 30)
+          read -r account arn <<< "$identity"
+          if [[ "$account" != '852000185801' ||
+                "$arn" != "arn:aws:sts::852000185801:assumed-role/pulsegrid-production-deployment/pulsegrid-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" ]]; then
+            echo '::error::Unexpected AWS deployment identity.'
+            exit 1
+          fi
+
+      - name: Fetch current main immediately before publication
+        if: steps.switch.outputs.enabled == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          path: .current-main
+          persist-credentials: false
+
+      - name: Require candidate to equal current main HEAD
+        id: freshness
+        if: steps.switch.outputs.enabled == 'true'
+        run: |
+          current_main=$(git -C .current-main rev-parse HEAD)
+          if [[ "$current_main" == "$GITHUB_SHA" ]]; then
+            echo 'publish=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'publish=false' >> "$GITHUB_OUTPUT"
+            echo "::notice::Stale frontend deployment skipped: candidate $GITHUB_SHA; current main $current_main. No S3 uploads or CloudFront invalidations performed."
+            echo "Stale deployment skipped: candidate \`$GITHUB_SHA\`, current main \`$current_main\`. No publication occurred. After the active deployment finishes, dispatch Frontend deployment from current main. Pending jobs can be replaced; automatic catch-up is not guaranteed." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Publish hashed assets, static files, then HTML
+        if: steps.switch.outputs.enabled == 'true' && steps.freshness.outputs.publish == 'true'
+        run: |
+          aws s3 cp dist/assets/ "s3://$FRONTEND_BUCKET/assets/" --recursive \
+            --cache-control 'public,max-age=31536000,immutable' --only-show-errors
+          aws s3 cp dist/ "s3://$FRONTEND_BUCKET/" --recursive \
+            --exclude 'assets/*' --exclude 'index.html' \
+            --cache-control 'no-cache,max-age=0,must-revalidate' --only-show-errors
+          aws s3 cp dist/index.html "s3://$FRONTEND_BUCKET/index.html" \
+            --content-type 'text/html' \
+            --cache-control 'no-cache,max-age=0,must-revalidate' --only-show-errors
+
+      - name: Invalidate CloudFront and wait for completion
+        if: steps.switch.outputs.enabled == 'true' && steps.freshness.outputs.publish == 'true'
+        run: |
+          invalidation_id=$(aws cloudfront create-invalidation \
+            --distribution-id "$CLOUDFRONT_DISTRIBUTION" \
+            --paths '/' '/index.html' '/logos/*' --query 'Invalidation.Id' --output text)
+          if [[ -z "$invalidation_id" || "$invalidation_id" == 'None' ]]; then
+            echo '::error::CloudFront returned no invalidation ID.'
+            exit 1
+          fi
+          echo "CloudFront invalidation: $invalidation_id" >> "$GITHUB_STEP_SUMMARY"
+          aws cloudfront wait invalidation-completed \
+            --distribution-id "$CLOUDFRONT_DISTRIBUTION" --id "$invalidation_id"
+
+      - name: Smoke test the deployed frontend
+        if: steps.switch.outputs.enabled == 'true' && steps.freshness.outputs.publish == 'true'
+        run: |
+          fetch() {
+            local path="$1" destination="$2" status
+            status=$(curl --fail --silent --show-error --connect-timeout 5 --max-time 30 \
+              --retry 2 --retry-max-time 60 --output "$destination" --write-out '%{http_code}' \
+              "$PUBLIC_URL$path")
+            [[ "$status" == '200' ]]
+          }
+          fetch / "$RUNNER_TEMP/frontend-index.html"
+          cmp -s dist/index.html "$RUNNER_TEMP/frontend-index.html"
+          js=$(find dist/assets -type f -name '*.js' -print -quit)
+          css=$(find dist/assets -type f -name '*.css' -print -quit)
+          fetch "/${js#dist/}" "$RUNNER_TEMP/frontend-asset"
+          cmp -s "$js" "$RUNNER_TEMP/frontend-asset" || {
+            echo "::error::Deployed JavaScript differs from the validated build: $js"
+            exit 1
+          }
+          fetch "/${css#dist/}" "$RUNNER_TEMP/frontend-asset"
+          cmp -s "$css" "$RUNNER_TEMP/frontend-asset" || {
+            echo "::error::Deployed CSS differs from the validated build: $css"
+            exit 1
+          }
+          if [[ -d dist/logos ]]; then
+            logo=$(find dist/logos -type f \( -name '*.svg' -o -name '*.png' -o -name '*.webp' -o -name '*.ico' \) -print -quit)
+            if [[ -n "$logo" ]]; then
+              fetch "/${logo#dist/}" "$RUNNER_TEMP/frontend-asset"
+            fi
+          fi
+          echo "Frontend $GITHUB_SHA published; invalidation completed and public smoke checks passed." >> "$GITHUB_STEP_SUMMARY"
