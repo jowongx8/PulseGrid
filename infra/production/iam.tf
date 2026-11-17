@@ -22,3 +22,29 @@ resource "aws_iam_instance_profile" "backend" {
   name = "pulsegrid-production-backend"
   role = aws_iam_role.backend.name
 }
+
+resource "aws_iam_role_policy" "backend_ecr_pull" {
+  name = "pulsegrid-production-ecr-pull"
+  role = aws_iam_role.backend.name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "AuthenticateToECR"
+        Effect   = "Allow"
+        Action   = "ecr:GetAuthorizationToken"
+        Resource = "*"
+      },
+      {
+        Sid    = "PullBackendImages"
+        Effect = "Allow"
+        Action = [
+          "ecr:BatchGetImage",
+          "ecr:GetDownloadUrlForLayer",
+        ]
+        Resource = aws_ecr_repository.backend.arn
+      },
+    ]
+  })
+}
