@@ -9,6 +9,8 @@ from pathlib import Path
 RUNTIME = Path(__file__).resolve().parent
 DIGEST = "sha256:" + "a" * 64
 PREVIOUS = "sha256:" + "b" * 64
+CONTAINER_ID = "c" * 64
+OLD_CONTAINER_ID = "d" * 64
 
 
 class RuntimeTests(unittest.TestCase):
@@ -36,16 +38,20 @@ PG_CONTAINER=pulsegrid-production-backend
 PG_REGION=ap-southeast-2
 DIGEST={DIGEST}
 PREVIOUS={PREVIOUS}
+CONTAINER_ID={CONTAINER_ID}
+OLD_CONTAINER_ID={OLD_CONTAINER_ID}
 INVOCATION_ID=0123456789abcdef0123456789abcdef
 pg_private() {{ [[ ! -L $1 && -f $1 ]]; }}
 pg_boot_id() {{ echo boot-one; }}
 pg_process_start() {{ echo 123; }}
 pg_storage() {{ echo storage >> "$PG_RUN/calls"; }}
-pg_container() {{ echo 'container-one 172.18.0.2'; }}
+pg_container() {{ echo "$CONTAINER_ID 172.18.0.2"; }}
 curl() {{ return 0; }}
 sleep() {{ :; }}
 docker() {{
-    if [[ $* == *State.Running* ]]; then echo false;
+    if [[ $1 == container && $2 == ls ]]; then printf '%s' "${{START_CONTAINER_ID:-}}";
+    elif [[ $* == *'.Id'* ]]; then echo "$CONTAINER_ID ${{CONTAINER_STATUS:-running}}";
+    elif [[ $* == *State.Running* ]]; then echo false;
     elif [[ $* == *State.Status* ]]; then echo running;
     else return 1; fi
 }}
@@ -202,8 +208,133 @@ deny() {{ if "$@"; then echo 'unexpected success' >&2; exit 80; fi; }}
 
     def test_candidate_exit_before_http_stays_held(self):
         # Exit-code propagation and Goose failures are verified separately on
-        # Linux / in Go; the host verifier rejects any exited container.
-        self.shell('select_image "$DIGEST"; hold; permit; pg_admit; pg_container() { return 1; }; docker() { echo exited; }; deny verify_backend; [[ -f $PG_STATE/hold.json ]]; deny pg_admit')
+        # Linux / in Go; the host verifier rejects an exited replacement.
+        self.shell('select_image "$DIGEST"; hold; permit; pg_admit; CONTAINER_STATUS=exited; pg_container() { return 1; }; deny verify_backend; [[ -f $PG_STATE/hold.json ]]; deny pg_admit')
+
+    def test_stopped_predecessor_is_ignored_until_replacement_even_for_same_digest(self):
+        for status in ("exited", "dead"):
+            for previous in (PREVIOUS, DIGEST):
+                with self.subTest(status=status, previous=previous):
+                    self.shell(f'''
+rm -f "$PG_RUN/replacement" "$PG_RUN/health"
+START_CONTAINER_ID=$OLD_CONTAINER_ID
+verified '{previous}'
+select_image '{previous}'
+docker() {{
+    if [[ $1 == container && $2 == ls ]]; then echo "$OLD_CONTAINER_ID";
+    elif [[ $* == *State.Running* ]]; then echo false;
+    elif [[ $* == *'.Id'* ]]; then
+        if [[ -f $PG_RUN/replacement ]]; then echo "$CONTAINER_ID running";
+        else echo "$OLD_CONTAINER_ID {status}"; fi
+    elif [[ $* == *State.Status* ]]; then
+        if [[ -f $PG_RUN/replacement ]]; then echo running; else echo {status}; fi
+    else return 1; fi
+}}
+pg_container() {{ [[ -f $PG_RUN/replacement ]] && echo "$CONTAINER_ID 172.18.0.2"; }}
+sleep() {{ touch "$PG_RUN/replacement"; }}
+curl() {{ [[ -f $PG_RUN/replacement ]] || return 1; echo healthy >> "$PG_RUN/health"; }}
+deploy_backend "$DIGEST"
+[[ $(pg_field "$PG_RUN/admitted.json" previous_container_id) == "$OLD_CONTAINER_ID" ]]
+[[ $(pg_field "$PG_STATE/verified.json" container_id) == "$CONTAINER_ID" ]]
+[[ $(cat "$PG_RUN/health") == healthy && ! -e $PG_STATE/hold.json ]]
+''')
+
+    def test_predecessor_that_is_never_replaced_times_out_and_retains_hold(self):
+        self.shell('''
+START_CONTAINER_ID=$CONTAINER_ID
+select_image "$DIGEST"; hold; permit; pg_admit
+CONTAINER_STATUS=exited
+pg_container() { echo unexpected > "$PG_RUN/probed-old"; return 1; }
+sleep() { SECONDS=10000; }
+deny verify_backend
+[[ -f $PG_STATE/hold.json && ! -e $PG_STATE/verified.json && ! -e $PG_RUN/probed-old ]]
+deny pg_admit
+''')
+
+    def test_new_replacement_exit_or_death_is_rejected_without_waiting(self):
+        for status in ("exited", "dead"):
+            with self.subTest(status=status):
+                self.shell(f'''
+START_CONTAINER_ID=$OLD_CONTAINER_ID
+select_image "$DIGEST"; hold; permit; pg_admit
+CONTAINER_STATUS={status}
+sleep() {{ touch "$PG_RUN/waited"; SECONDS=10000; }}
+curl() {{ touch "$PG_RUN/health"; return 0; }}
+deny verify_backend
+[[ -f $PG_STATE/hold.json && ! -e $PG_STATE/verified.json ]]
+[[ ! -e $PG_RUN/waited && ! -e $PG_RUN/health ]]
+deny pg_admit
+''')
+
+    def test_replacement_identity_change_before_health_is_rejected(self):
+        self.shell('''
+select_image "$DIGEST"; hold; permit; pg_admit
+docker() {
+    if [[ -f $PG_RUN/changed ]]; then echo "$OLD_CONTAINER_ID running";
+    else echo "$CONTAINER_ID created"; fi
+}
+pg_container() { return 1; }
+sleep() { touch "$PG_RUN/changed"; }
+deny verify_backend
+[[ -f $PG_STATE/hold.json && ! -e $PG_STATE/verified.json ]]
+''')
+
+    def test_replacement_identity_change_after_health_is_rejected(self):
+        self.shell('''
+select_image "$DIGEST"; hold; permit; pg_admit
+pg_container() {
+    if [[ -f $PG_RUN/probed ]]; then echo "$OLD_CONTAINER_ID 172.18.0.3";
+    else touch "$PG_RUN/probed"; echo "$CONTAINER_ID 172.18.0.2"; fi
+}
+deny verify_backend
+[[ -f $PG_STATE/hold.json && ! -e $PG_STATE/verified.json ]]
+''')
+
+    def test_identity_mismatch_between_status_and_strict_inspection_is_rejected(self):
+        self.shell('''
+select_image "$DIGEST"; hold; permit; pg_admit
+pg_container() { echo "$OLD_CONTAINER_ID 172.18.0.3"; }
+curl() { touch "$PG_RUN/health"; return 0; }
+deny verify_backend
+[[ -f $PG_STATE/hold.json && ! -e $PG_STATE/verified.json && ! -e $PG_RUN/health ]]
+''')
+
+    def test_replacement_disappearance_is_rejected(self):
+        self.shell('''
+select_image "$DIGEST"; hold; permit; pg_admit
+docker() { [[ ! -f $PG_RUN/disappeared ]] && echo "$CONTAINER_ID created"; }
+pg_container() { return 1; }
+sleep() { touch "$PG_RUN/disappeared"; }
+deny verify_backend
+[[ -f $PG_STATE/hold.json && ! -e $PG_STATE/verified.json ]]
+''')
+
+    def test_initial_absence_before_first_container_is_allowed(self):
+        self.shell('''
+select_image "$DIGEST"; hold; permit; pg_admit
+[[ $(pg_field "$PG_RUN/admitted.json" previous_container_id) == '' ]]
+docker() { [[ -f $PG_RUN/created ]] && echo "$CONTAINER_ID running"; }
+pg_container() { [[ -f $PG_RUN/created ]] && echo "$CONTAINER_ID 172.18.0.2"; }
+sleep() { touch "$PG_RUN/created"; }
+verify_backend
+[[ ! -e $PG_STATE/hold.json && $(pg_field "$PG_STATE/verified.json" container_id) == "$CONTAINER_ID" ]]
+''')
+
+    def test_container_snapshot_failure_denies_admission_and_spends_permit(self):
+        self.shell('''
+select_image "$DIGEST"; hold; permit
+docker() { return 1; }
+deny pg_admit
+[[ -f $PG_STATE/hold.json && ! -e $PG_RUN/permit.json && ! -e $PG_RUN/admitted.json ]]
+''')
+
+    def test_invalid_predecessor_identity_denies_admission(self):
+        self.shell('''
+select_image "$DIGEST"; hold; permit
+START_CONTAINER_ID=invalid
+deny pg_admit
+[[ -f $PG_STATE/hold.json && ! -e $PG_RUN/permit.json && ! -e $PG_RUN/admitted.json ]]
+''')
 
     def test_running_but_unhealthy_candidate_times_out(self):
         self.shell('select_image "$DIGEST"; hold; permit; pg_admit; curl() { return 1; }; sleep() { SECONDS=10000; }; deny verify_backend; [[ -f $PG_STATE/hold.json ]]; deny pg_admit')
@@ -211,7 +342,7 @@ deny() {{ if "$@"; then echo 'unexpected success' >&2; exit 80; fi; }}
     def test_failed_health_stops_candidate_and_preserves_data(self):
         database = self.root / "data/pulsegrid.db"
         database.write_bytes(b"existing-database-not-a-test-sqlite-file")
-        self.shell('pg_container() { return 1; }; docker() { echo exited; }; deny deploy_backend "$DIGEST"; (trap deploy_cleanup EXIT; exit 1) && exit 81; [[ -f $PG_STATE/hold.json && ! -e $PG_RUN/active ]]; deny pg_admit')
+        self.shell('pg_container() { return 1; }; CONTAINER_STATUS=exited; deny deploy_backend "$DIGEST"; (trap deploy_cleanup EXIT; exit 1) && exit 81; [[ -f $PG_STATE/hold.json && ! -e $PG_RUN/active ]]; deny pg_admit')
         self.assertEqual(database.read_bytes(), b"existing-database-not-a-test-sqlite-file")
 
     def test_success_record_before_hold_clear_still_blocks_restart(self):

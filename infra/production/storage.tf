@@ -14,8 +14,9 @@ resource "aws_ebs_volume" "sqlite" {
 }
 
 resource "aws_volume_attachment" "sqlite" {
-  device_name  = "/dev/sdf"
-  volume_id    = aws_ebs_volume.sqlite.id
-  instance_id  = aws_instance.backend.id
-  force_detach = false
+  device_name                    = "/dev/sdf"
+  volume_id                      = aws_ebs_volume.sqlite.id
+  instance_id                    = aws_instance.backend.id
+  force_detach                   = false
+  stop_instance_before_detaching = true
 }

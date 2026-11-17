@@ -63,6 +63,7 @@ resource "aws_iam_role_policy" "github_deployment" {
           "ecr:PutImage",
           "ecr:BatchGetImage",
           "ecr:DescribeImages",
+          "ecr:GetDownloadUrlForLayer",
         ]
         Resource = aws_ecr_repository.backend.arn
       },

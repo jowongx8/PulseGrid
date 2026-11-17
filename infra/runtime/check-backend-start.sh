@@ -163,7 +163,7 @@ pg_storage() {
 }
 
 pg_admit() {
-    local candidate boot pid started deployment=
+    local candidate boot pid started previous_container_id deployment=
     pg_selection || { pg_error 'no approved image selection'; return 1; }
     [[ ${INVOCATION_ID:-} =~ ^[0-9a-f]{32}$ ]] || { pg_error 'systemd invocation required'; return 1; }
     # Hold wins even if a crash occurred after writing the new success record.
@@ -189,7 +189,17 @@ pg_admit() {
         }
     fi
     pg_storage || { pg_error 'persistent EBS verification failed'; return 1; }
-    pg_atomic json "$PG_RUN/admitted.json" digest "$PG_DIGEST" invocation "$INVOCATION_ID" deployment "$deployment"
+    # ExecCondition precedes Compose. Record the old container even for a
+    # same-digest restart; ExecStartPost must wait for a different container ID.
+    previous_container_id=$(docker container ls --all --no-trunc \
+        --filter "name=^/$PG_CONTAINER$" --format '{{.ID}}') || {
+        pg_error 'cannot identify the container before startup'; return 1;
+    }
+    [[ -z $previous_container_id || $previous_container_id =~ ^[0-9a-f]{64}$ ]] || {
+        pg_error 'invalid pre-start container identity'; return 1;
+    }
+    pg_atomic json "$PG_RUN/admitted.json" digest "$PG_DIGEST" invocation "$INVOCATION_ID" \
+        deployment "$deployment" previous_container_id "$previous_container_id"
 }
 
 pg_container() {

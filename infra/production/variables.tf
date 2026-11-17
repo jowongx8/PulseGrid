@@ -9,12 +9,17 @@ variable "expected_aws_account_id" {
 }
 
 variable "backend_origin_hostname" {
-  description = "Registered lowercase DuckDNS hostname pointing to the existing backend Elastic IP, without a scheme, path, port, or trailing dot."
+  description = "Approved Caddy hostname pulsegrid-api.duckdns.org pointing to the existing backend Elastic IP, without a scheme, path, port, or trailing dot."
   type        = string
 
   validation {
     condition     = can(regex("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.duckdns\\.org$", var.backend_origin_hostname))
     error_message = "backend_origin_hostname must be a bare lowercase hostname such as <registered-name>.duckdns.org, with a valid 1-63 character DNS label."
+  }
+
+  validation {
+    condition     = var.backend_origin_hostname == "pulsegrid-api.duckdns.org"
+    error_message = "backend_origin_hostname must match the production Caddy hostname pulsegrid-api.duckdns.org."
   }
 }
 
