@@ -28,6 +28,7 @@ jobs:
     outputs:
       backend: ${{ steps.filter.outputs.backend }}
       frontend: ${{ steps.filter.outputs.frontend }}
+      deployment: ${{ steps.filter.outputs.deployment }}
     steps:
       - name: Check PR file-list limit
         if: github.event_name == 'pull_request'
@@ -43,7 +44,7 @@ jobs:
 
       - name: Check out push history
         if: github.event_name == 'push'
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -59,10 +60,20 @@ jobs:
               - 'backend/**'
               - '.github/workflows/backend-ci.yml'
               - '.github/workflows/pr-ci.yml'
+              - '.github/scripts/**'
+              - '.github/actionlint.yaml'
             frontend:
               - 'frontend/**'
               - '.github/workflows/frontend-ci.yml'
               - '.github/workflows/pr-ci.yml'
+              - '.github/workflows/frontend-deploy.yml'
+              - '.github/scripts/**'
+              - '.github/actionlint.yaml'
+            deployment:
+              - '.github/workflows/**'
+              - '.github/scripts/**'
+              - 'infra/runtime/**'
+              - '.github/actionlint.yaml'
 
   backend:
     needs: changes
@@ -74,9 +85,31 @@ jobs:
     if: needs.changes.result == 'success' && needs.changes.outputs.frontend == 'true'
     uses: ./.github/workflows/frontend-ci.yml
 
+  deployment:
+    name: Deployment configuration
+    needs: changes
+    if: needs.changes.result == 'success' && needs.changes.outputs.deployment == 'true'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    outputs:
+      validation_result: ${{ steps.check.outcome }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate deployment configuration
+        id: check
+        run: |
+          for script in .github/scripts/*.sh infra/runtime/*.sh; do
+            bash -n "$script"
+          done
+          python3 -m unittest discover -s infra/runtime -p '*_test.py'
+          bash .github/scripts/check-workflows.sh
+
   gate:
     name: CI Gate
-    needs: [changes, backend, frontend]
+    needs: [changes, backend, frontend, deployment]
     if: ${{ always() }}
     runs-on: ubuntu-26.04
     timeout-minutes: 5
@@ -91,6 +124,9 @@ jobs:
           FRONTEND_RESULT: ${{ needs.frontend.result }}
           BACKEND_VALIDATION_RESULT: ${{ needs.backend.outputs.validation_result }}
           FRONTEND_VALIDATION_RESULT: ${{ needs.frontend.outputs.validation_result }}
+          DEPLOYMENT_REQUIRED: ${{ needs.changes.outputs.deployment }}
+          DEPLOYMENT_RESULT: ${{ needs.deployment.result }}
+          DEPLOYMENT_VALIDATION_RESULT: ${{ needs.deployment.outputs.validation_result }}
         shell: bash
         run: |
           if [[ "$DETECTION_RESULT" != 'success' ]]; then
@@ -127,4 +163,6 @@ jobs:
             "$BACKEND_VALIDATION_RESULT" || failed=1
           check_validation 'Frontend' "$FRONTEND_REQUIRED" "$FRONTEND_RESULT" \
             "$FRONTEND_VALIDATION_RESULT" || failed=1
+          check_validation 'Deployment configuration' "$DEPLOYMENT_REQUIRED" "$DEPLOYMENT_RESULT" \
+            "$DEPLOYMENT_VALIDATION_RESULT" || failed=1
           exit "$failed"
