@@ -249,6 +249,8 @@ func (w *applicationStreamWriter) Header() http.Header {
 
 func (*applicationStreamWriter) WriteHeader(int) {}
 
+func (*applicationStreamWriter) SetWriteDeadline(time.Time) error { return nil }
+
 func (*applicationStreamWriter) Write(body []byte) (int, error) {
 	return len(body), nil
 }

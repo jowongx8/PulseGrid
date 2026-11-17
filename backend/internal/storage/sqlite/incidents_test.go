@@ -218,7 +218,9 @@ func TestIncidentStoreListFeedRejectsNegativeTarget(t *testing.T) {
 	}
 }
 
-func TestIncidentStoreListFeedUsesOneReadSnapshot(t *testing.T) {
+// The feed queries share a caller-owned transaction here; this test verifies
+// their snapshot consistency, rather than ListFeed's transaction orchestration.
+func TestIncidentFeedQueriesShareReadSnapshot(t *testing.T) {
 	ctx := context.Background()
 	db := openIncidentTestDB(t)
 	store := NewIncidentStore(db)

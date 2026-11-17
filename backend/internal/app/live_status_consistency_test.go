@@ -133,81 +133,6 @@ func TestLiveStatusConsistencyAcrossDownAndRecovery(t *testing.T) {
 	}
 }
 
-func TestStatusReconciliationRequiresStrictlyNewerEvent(t *testing.T) {
-	base := time.Date(2026, 9, 24, 11, 0, 0, 0, time.UTC)
-	model := newReconciliationModel(t, []ServiceStatusView{{
-		ID: "github",
-		Status: CurrentStatusView{
-			State:         status.StatusUp,
-			LastCheckedAt: timePointer(base),
-		},
-	}}, IncidentsView{})
-
-	for _, value := range []reconciliationEvent{
-		statusWireEvent("github", status.StatusDown, base.Add(-time.Second)),
-		statusWireEvent("github", status.StatusDown, base),
-	} {
-		model.apply(value)
-		assertReconciledStatus(t, model, "github", status.StatusUp, base)
-	}
-
-	newer := base.Add(time.Second)
-	model.apply(statusWireEvent("github", status.StatusDown, newer))
-	assertReconciledStatus(t, model, "github", status.StatusDown, newer)
-
-	model.apply(statusWireEvent("github", status.StatusUp, newer))
-	model.apply(statusWireEvent("github", status.StatusUp, base))
-	assertReconciledStatus(t, model, "github", status.StatusDown, newer)
-
-	withoutTimestamp := newReconciliationModel(t, []ServiceStatusView{{
-		ID:     "new-service",
-		Status: CurrentStatusView{State: status.StatusUnknown},
-	}}, IncidentsView{})
-	withoutTimestamp.apply(statusWireEvent("new-service", status.StatusUp, base))
-	assertReconciledStatus(t, withoutTimestamp, "new-service", status.StatusUp, base)
-}
-
-func TestIncidentReconciliationIsIdempotent(t *testing.T) {
-	startedAt := "2026-09-24T12:00:00.123456+00:00"
-	resolvedAt := "2026-09-24T12:05:00.654321+00:00"
-	key := incidentKey("github", startedAt)
-	opened := incidentWireEvent("incident.opened", "github", startedAt, "")
-	resolved := incidentWireEvent("incident.resolved", "github", startedAt, resolvedAt)
-
-	t.Run("duplicate opening remains one active incident", func(t *testing.T) {
-		model := newReconciliationModel(t, nil, IncidentsView{})
-		model.apply(opened)
-		model.apply(opened)
-		assertIncidentKeys(t, model, []string{key}, nil)
-		if model.active[key].startedAt != startedAt {
-			t.Fatalf("stored identity timestamp = %q, want raw %q", model.active[key].startedAt, startedAt)
-		}
-	})
-
-	t.Run("resolution moves active incident once", func(t *testing.T) {
-		model := newReconciliationModel(t, nil, IncidentsView{})
-		model.apply(opened)
-		model.apply(resolved)
-		model.apply(resolved)
-		model.apply(opened)
-		assertIncidentKeys(t, model, nil, []string{key})
-	})
-
-	t.Run("opening already represented as resolved is ignored", func(t *testing.T) {
-		model := newReconciliationModel(t, nil, IncidentsView{})
-		model.apply(opened)
-		model.apply(resolved)
-		model.apply(opened)
-		assertIncidentKeys(t, model, nil, []string{key})
-	})
-
-	t.Run("missing bounded-history resolution is ignored", func(t *testing.T) {
-		model := newReconciliationModel(t, nil, IncidentsView{})
-		model.apply(resolved)
-		assertIncidentKeys(t, model, nil, nil)
-	})
-}
-
 func TestIncidentReconciliationKeepsBoundedFeed(t *testing.T) {
 	t.Run("all active incidents converge when resolved capacity is zero", func(t *testing.T) {
 		store, query := newConsistencyIncidentStore(t)
@@ -544,6 +469,8 @@ type reconciliationEvent struct {
 	resolvedAt    string
 }
 
+// reconciliationModel is a reference consumer for the backend integration
+// scenarios in this file; actual frontend reconciliation is tested in the frontend.
 type reconciliationModel struct {
 	statuses map[string]reconciliationStatus
 	active   map[string]reconciliationIncident
@@ -803,8 +730,4 @@ func executeIncidentsQuery(t *testing.T, query *IncidentsQuery) IncidentsView {
 		t.Fatal(err)
 	}
 	return view
-}
-
-func timePointer(value time.Time) *time.Time {
-	return &value
 }

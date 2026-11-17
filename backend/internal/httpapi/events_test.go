@@ -6,8 +6,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"strings"
 	"sync"
@@ -77,14 +79,136 @@ func TestEventStreamMapsAndOrdersPublicEvents(t *testing.T) {
 
 func TestEventStreamSendsCommentHeartbeat(t *testing.T) {
 	broker := newHTTPTestBroker(t, event.DefaultSubscriberBufferSize)
-	if sseHeartbeatInterval != 30*time.Second {
-		t.Fatalf("production heartbeat interval = %s, want 30s", sseHeartbeatInterval)
+	if sseHeartbeatInterval != 15*time.Second {
+		t.Fatalf("production heartbeat interval = %s, want 15s", sseHeartbeatInterval)
 	}
 	_, reader, _ := openEventStream(t, newEventStreamHandler(broker, time.Millisecond))
 
 	if got, want := readSSERecord(t, reader), []string{": keep-alive"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("heartbeat = %#v, want %#v", got, want)
 	}
+}
+
+func TestEventStreamHealthyAcrossHeartbeatIntervals(t *testing.T) {
+	t.Parallel()
+	if sseWriteTimeout != 5*time.Second {
+		t.Fatalf("write timeout = %s, want 5s", sseWriteTimeout)
+	}
+	broker := newHTTPTestBroker(t, event.DefaultSubscriberBufferSize)
+	subscriber := &recordingEventSubscriber{broker: broker, subscriptions: make(chan *event.Subscription, 1)}
+	router := NewRouter(&fakeCurrentStatusReader{}, &fakeIncidentsReader{}, subscriber)
+	done := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		router.ServeHTTP(w, request)
+		close(done)
+	}))
+	t.Cleanup(server.Close)
+	// Use the production heartbeat interval and allow two complete idle intervals.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*sseHeartbeatInterval+3*sseWriteTimeout)
+	t.Cleanup(cancel)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+"/api/v1/events", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := server.Client().Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = response.Body.Close() })
+	subscription := waitHTTPTestValue(t, subscriber.subscriptions)
+	reader := bufio.NewReader(response.Body)
+	if got := readSSERecord(t, reader); !reflect.DeepEqual(got, []string{": connected"}) {
+		t.Fatalf("initial record = %q, want connection comment", got)
+	}
+	for range 2 {
+		if got := readSSERecord(t, reader); !reflect.DeepEqual(got, []string{": keep-alive"}) {
+			t.Fatalf("heartbeat = %q, want keep-alive comment", got)
+		}
+	}
+	if err := broker.Publish(event.StatusChanged{
+		ServiceID: "github", State: status.StatusUp, LastCheckedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := readSSERecord(t, reader); len(got) != 2 || got[0] != "event: status.changed" {
+		t.Fatalf("record after idle intervals = %q, want status.changed", got)
+	}
+	cancel()
+	waitHTTPTestSignal(t, done)
+	assertEventChannelClosed(t, subscription.Events())
+}
+
+func TestEventStreamStalledSocketTimesOutAndClosesSubscription(t *testing.T) {
+	t.Parallel()
+	broker := newHTTPTestBroker(t, event.DefaultSubscriberBufferSize)
+	subscriber := &recordingEventSubscriber{broker: broker, subscriptions: make(chan *event.Subscription, 1)}
+	router := NewRouter(&fakeCurrentStatusReader{}, &fakeIncidentsReader{}, subscriber)
+	writeErrors := make(chan error, 1)
+	done := make(chan struct{})
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		// Delegate all I/O to the real server writer. ResponseController reaches
+		// its native SetWriteDeadline through Unwrap.
+		router.ServeHTTP(&observingStreamWriter{ResponseWriter: w, writeErrors: writeErrors}, request)
+		close(done)
+	}))
+	server.Config.ConnState = func(conn net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			if err := conn.(*net.TCPConn).SetWriteBuffer(4096); err != nil {
+				t.Errorf("set server write buffer: %v", err)
+			}
+		}
+	}
+	server.Start()
+	t.Cleanup(server.Close)
+	conn, err := net.DialTimeout("tcp", server.Listener.Addr().String(), eventHTTPTestTimeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	if err := conn.(*net.TCPConn).SetReadBuffer(4096); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.SetDeadline(time.Now().Add(eventHTTPTestTimeout)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fmt.Fprintf(conn, "GET /api/v1/events HTTP/1.1\r\nHost: %s\r\n\r\n", server.Listener.Addr()); err != nil {
+		t.Fatal(err)
+	}
+	response, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodGet})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", response.StatusCode)
+	}
+	if got := readSSERecord(t, bufio.NewReader(response.Body)); !reflect.DeepEqual(got, []string{": connected"}) {
+		t.Fatalf("initial record = %q, want connection comment", got)
+	}
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	subscription := waitHTTPTestValue(t, subscriber.subscriptions)
+	// Stop reading but keep the socket connected. One large event fills the TCP
+	// buffers without overflowing the broker queue or canceling the request.
+	if err := broker.Publish(event.IncidentOpened{
+		ServiceID: strings.Repeat("x", 8<<20), StartedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	timer := time.NewTimer(sseWriteTimeout + 2*eventHTTPTestTimeout)
+	defer timer.Stop()
+	select {
+	case err := <-writeErrors:
+		var netErr net.Error
+		if !errors.Is(err, os.ErrDeadlineExceeded) || !errors.As(err, &netErr) || !netErr.Timeout() {
+			t.Fatalf("socket write error = %v, want write deadline exceeded", err)
+		}
+		t.Logf("stalled socket write ended with deadline error: %v", err)
+	case <-timer.C:
+		t.Fatal("stalled socket write did not reach its deadline")
+	}
+	waitHTTPTestSignal(t, done)
+	assertEventChannelClosed(t, subscription.Events())
 }
 
 func TestEventStreamClientCancellationClosesSubscription(t *testing.T) {
@@ -201,8 +325,14 @@ func TestEventStreamInitialWriteAndFlushFailuresCloseSubscription(t *testing.T) 
 			subscriber := &recordingEventSubscriber{broker: broker, subscriptions: make(chan *event.Subscription, 1)}
 			writer := &initialFailureStreamWriter{failWrite: failWrite}
 			done := make(chan struct{})
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(func() {
+				cancel()
+				waitHTTPTestSignal(t, done)
+			})
+			request := httptest.NewRequest(http.MethodGet, "/api/v1/events", nil).WithContext(ctx)
 			go func() {
-				eventStreamHandler(subscriber).ServeHTTP(writer, httptest.NewRequest(http.MethodGet, "/api/v1/events", nil))
+				eventStreamHandler(subscriber).ServeHTTP(writer, request)
 				close(done)
 			}()
 			waitHTTPTestSignal(t, done)
@@ -212,14 +342,82 @@ func TestEventStreamInitialWriteAndFlushFailuresCloseSubscription(t *testing.T) 
 	}
 }
 
+func TestEventStreamDeadlineFailuresCloseSubscription(t *testing.T) {
+	wantErr := errors.New("set write deadline failed")
+	for _, failCall := range []int{1, 2} {
+		t.Run(fmt.Sprintf("deadline call %d", failCall), func(t *testing.T) {
+			broker := newHTTPTestBroker(t, 1)
+			subscriber := &recordingEventSubscriber{broker: broker, subscriptions: make(chan *event.Subscription, 1)}
+			writer := &failingDeadlineStreamWriter{
+				ResponseRecorder: httptest.NewRecorder(), failCall: failCall, err: wantErr,
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), eventHTTPTestTimeout)
+			defer cancel()
+			request := httptest.NewRequest(http.MethodGet, "/api/v1/events", nil).WithContext(ctx)
+			eventStreamHandler(subscriber).ServeHTTP(writer, request)
+			subscription := waitHTTPTestValue(t, subscriber.subscriptions)
+			assertEventChannelClosed(t, subscription.Events())
+			if writer.calls != failCall {
+				t.Fatalf("deadline calls = %d, want %d", writer.calls, failCall)
+			}
+		})
+	}
+}
+
+type failingDeadlineStreamWriter struct {
+	*httptest.ResponseRecorder
+	calls    int
+	failCall int
+	err      error
+}
+
+func (w *failingDeadlineStreamWriter) SetWriteDeadline(time.Time) error {
+	w.calls++
+	if w.calls == w.failCall {
+		return w.err
+	}
+	return nil
+}
+
+type observingStreamWriter struct {
+	http.ResponseWriter
+	writeErrors chan<- error
+}
+
+func (w *observingStreamWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func (w *observingStreamWriter) Write(body []byte) (int, error) {
+	n, err := w.ResponseWriter.Write(body)
+	if err != nil {
+		w.writeErrors <- err
+	}
+	return n, err
+}
+
+func (w *observingStreamWriter) Flush() { _ = w.FlushError() }
+
+func (w *observingStreamWriter) FlushError() error {
+	err := http.NewResponseController(w.ResponseWriter).Flush()
+	if err != nil {
+		w.writeErrors <- err
+	}
+	return err
+}
+
 type initialFailureStreamWriter struct {
 	failWrite bool
 }
 
-func (*initialFailureStreamWriter) Header() http.Header { return make(http.Header) }
-func (*initialFailureStreamWriter) WriteHeader(int)     {}
-func (*initialFailureStreamWriter) Flush()              {}
-func (*initialFailureStreamWriter) FlushError() error   { return errors.New("initial flush failed") }
+func (*initialFailureStreamWriter) Header() http.Header              { return make(http.Header) }
+func (*initialFailureStreamWriter) WriteHeader(int)                  {}
+func (*initialFailureStreamWriter) Flush()                           {}
+func (*initialFailureStreamWriter) SetWriteDeadline(time.Time) error { return nil }
+func (w *initialFailureStreamWriter) FlushError() error {
+	if w.failWrite {
+		return nil
+	}
+	return errors.New("initial flush failed")
+}
 func (w *initialFailureStreamWriter) Write(body []byte) (int, error) {
 	if w.failWrite {
 		return 0, errors.New("initial write failed")
@@ -398,6 +596,8 @@ func (w *blockingStreamWriter) Header() http.Header {
 
 func (*blockingStreamWriter) WriteHeader(int) {}
 
+func (*blockingStreamWriter) SetWriteDeadline(time.Time) error { return nil }
+
 func (w *blockingStreamWriter) Write(body []byte) (int, error) {
 	if string(body) == ": connected\n\n" {
 		return len(body), nil
@@ -437,6 +637,8 @@ func (w *failingWriteStreamWriter) Header() http.Header {
 
 func (*failingWriteStreamWriter) WriteHeader(int) {}
 
+func (*failingWriteStreamWriter) SetWriteDeadline(time.Time) error { return nil }
+
 func (*failingWriteStreamWriter) Write(body []byte) (int, error) {
 	if string(body) == ": connected\n\n" {
 		return len(body), nil
@@ -467,6 +669,8 @@ func (w *failingFlushStreamWriter) Header() http.Header {
 }
 
 func (*failingFlushStreamWriter) WriteHeader(int) {}
+
+func (*failingFlushStreamWriter) SetWriteDeadline(time.Time) error { return nil }
 
 func (*failingFlushStreamWriter) Write(body []byte) (int, error) {
 	return len(body), nil
