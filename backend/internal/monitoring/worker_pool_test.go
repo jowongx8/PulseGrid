@@ -6,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/jowongx8/backend/internal/service"
@@ -160,46 +161,50 @@ func TestWorkerPoolBoundsConcurrentChecks(t *testing.T) {
 }
 
 func TestWorkerPoolSubmitAppliesBackpressure(t *testing.T) {
-	checker := newBlockingPoolChecker()
-	pool := newTestWorkerPool(t, checker, 1, 1)
-	runCtx, cancelRun := context.WithCancel(context.Background())
-	runDone := runPool(t, pool, runCtx)
+	synctest.Test(t, func(t *testing.T) {
+		checker := newBlockingPoolChecker()
+		pool := newTestWorkerPool(t, checker, 1, 1)
+		runCtx, cancelRun := context.WithCancel(context.Background())
+		defer cancelRun()
+		runDone := runPool(t, pool, runCtx)
 
-	if err := pool.Submit(context.Background(), poolService("active")); err != nil {
-		t.Fatalf("Submit(active) error = %v", err)
-	}
-	if got := waitString(t, checker.started, "checker start"); got != "active" {
-		t.Fatalf("first started check = %q, want active", got)
-	}
-
-	if err := pool.Submit(context.Background(), poolService("queued")); err != nil {
-		t.Fatalf("Submit(queued) error = %v", err)
-	}
-
-	submitDone := make(chan error, 1)
-	go func() {
-		submitDone <- pool.Submit(context.Background(), poolService("blocked"))
-	}()
-
-	select {
-	case err := <-submitDone:
-		t.Fatalf("blocked Submit returned before queue capacity was available: %v", err)
-	default:
-	}
-
-	close(checker.release)
-
-	select {
-	case err := <-submitDone:
-		if err != nil {
-			t.Fatalf("blocked Submit error = %v", err)
+		if err := pool.Submit(context.Background(), poolService("active")); err != nil {
+			t.Fatalf("Submit(active) error = %v", err)
 		}
-	case <-time.After(workerPoolTestTimeout):
-		t.Fatal("blocked Submit did not return after queue capacity became available")
-	}
+		if got := waitString(t, checker.started, "checker start"); got != "active" {
+			t.Fatalf("first started check = %q, want active", got)
+		}
 
-	cancelRun()
-	waitClosed(t, runDone, "worker pool run")
+		if err := pool.Submit(context.Background(), poolService("queued")); err != nil {
+			t.Fatalf("Submit(queued) error = %v", err)
+		}
+
+		submitDone := make(chan error, 1)
+		go func() {
+			submitDone <- pool.Submit(context.Background(), poolService("blocked"))
+		}()
+
+		synctest.Wait()
+		select {
+		case err := <-submitDone:
+			t.Fatalf("blocked Submit returned before queue capacity was available: %v", err)
+		default:
+		}
+
+		close(checker.release)
+
+		select {
+		case err := <-submitDone:
+			if err != nil {
+				t.Fatalf("blocked Submit error = %v", err)
+			}
+		case <-time.After(workerPoolTestTimeout):
+			t.Fatal("blocked Submit did not return after queue capacity became available")
+		}
+
+		cancelRun()
+		waitClosed(t, runDone, "worker pool run")
+	})
 }
 
 func TestWorkerPoolSubmitHonorsCancellationAndDeadlines(t *testing.T) {
@@ -220,6 +225,66 @@ func TestWorkerPoolSubmitHonorsCancellationAndDeadlines(t *testing.T) {
 
 	if err := pool.Submit(deadlineCtx, poolService("deadline")); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Submit() error = %v, want context.DeadlineExceeded", err)
+	}
+}
+
+func TestWorkerPoolBlockedSubmitStopsWithoutEnqueuing(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		want error
+	}{
+		{name: "cancellation", want: context.Canceled},
+		{name: "deadline", want: context.DeadlineExceeded},
+		{name: "pool shutdown", want: errWorkerPoolStopped},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				checker := newBlockingPoolChecker()
+				pool := newTestWorkerPool(t, checker, 1, 1)
+				runCtx, cancelRun := context.WithCancel(context.Background())
+				defer cancelRun()
+				runDone := runPool(t, pool, runCtx)
+				if err := pool.Submit(context.Background(), poolService("active")); err != nil {
+					t.Fatal(err)
+				}
+				if got := waitString(t, checker.started, "checker start"); got != "active" {
+					t.Fatalf("started check = %q, want active", got)
+				}
+				if err := pool.Submit(context.Background(), poolService("queued")); err != nil {
+					t.Fatal(err)
+				}
+
+				submitCtx, cancelSubmit := context.WithTimeout(context.Background(), time.Minute)
+				defer cancelSubmit()
+				submitDone := make(chan error, 1)
+				go func() { submitDone <- pool.Submit(submitCtx, poolService("blocked")) }()
+				synctest.Wait()
+				select {
+				case err := <-submitDone:
+					t.Fatalf("Submit returned before cancellation or available capacity: %v", err)
+				default:
+				}
+
+				switch test.name {
+				case "cancellation":
+					cancelSubmit()
+				case "pool shutdown":
+					cancelRun()
+				}
+				// In the deadline case, synctest advances time once every goroutine blocks.
+				if err := <-submitDone; !errors.Is(err, test.want) {
+					t.Fatalf("Submit error = %v, want %v", err, test.want)
+				}
+				if queued := len(pool.jobs); queued != 1 {
+					t.Fatalf("queued jobs = %d, want only the previously accepted job", queued)
+				}
+				cancelRun()
+				waitClosed(t, runDone, "worker pool run")
+				if got := checker.startedServices(); len(got) != 1 || got[0] != "active" {
+					t.Fatalf("started checks = %v, want only active", got)
+				}
+			})
+		})
 	}
 }
 
@@ -303,37 +368,41 @@ func TestWorkerPoolRunIsSingleUse(t *testing.T) {
 }
 
 func TestWorkerPoolSecondRunWhileActiveDoesNotStartMoreWorkers(t *testing.T) {
-	checker := newBlockingPoolChecker()
-	pool := newTestWorkerPool(t, checker, 1, 2)
-	runCtx, cancelRun := context.WithCancel(context.Background())
-	runDone := runPool(t, pool, runCtx)
+	synctest.Test(t, func(t *testing.T) {
+		checker := newBlockingPoolChecker()
+		pool := newTestWorkerPool(t, checker, 1, 2)
+		runCtx, cancelRun := context.WithCancel(context.Background())
+		runDone := runPool(t, pool, runCtx)
+		defer func() {
+			cancelRun()
+			waitClosed(t, runDone, "worker pool run")
+		}()
 
-	if err := pool.Submit(context.Background(), poolService("active")); err != nil {
-		t.Fatalf("Submit(active) error = %v", err)
-	}
-	if got := waitString(t, checker.started, "checker start"); got != "active" {
-		t.Fatalf("started check = %q, want active", got)
-	}
+		if err := pool.Submit(context.Background(), poolService("active")); err != nil {
+			t.Fatalf("Submit(active) error = %v", err)
+		}
+		if got := waitString(t, checker.started, "checker start"); got != "active" {
+			t.Fatalf("started check = %q, want active", got)
+		}
 
-	secondReturned := make(chan struct{})
-	go func() {
-		defer close(secondReturned)
-		pool.Run(context.Background())
-	}()
-	waitClosed(t, secondReturned, "second Run call")
+		secondReturned := make(chan struct{})
+		go func() {
+			defer close(secondReturned)
+			pool.Run(runCtx)
+		}()
+		waitClosed(t, secondReturned, "second Run call")
 
-	if err := pool.Submit(context.Background(), poolService("queued")); err != nil {
-		t.Fatalf("Submit(queued) error = %v", err)
-	}
+		if err := pool.Submit(context.Background(), poolService("queued")); err != nil {
+			t.Fatalf("Submit(queued) error = %v", err)
+		}
 
-	select {
-	case got := <-checker.started:
-		t.Fatalf("unexpected extra worker started check %q", got)
-	default:
-	}
-
-	cancelRun()
-	waitClosed(t, runDone, "worker pool run")
+		synctest.Wait()
+		select {
+		case got := <-checker.started:
+			t.Fatalf("unexpected extra worker started check %q", got)
+		default:
+		}
+	})
 }
 
 func TestWorkerPoolSubmitAfterRunTerminatesFails(t *testing.T) {
@@ -419,29 +488,45 @@ func TestWorkerPoolResultsArriveInCompletionOrder(t *testing.T) {
 }
 
 func TestWorkerPoolCancellationUnblocksSlowResultConsumer(t *testing.T) {
-	checker := &notifyingImmediateChecker{
-		calls: make(chan string, 2),
-	}
-	pool := newTestWorkerPool(t, checker, 1, 2)
-	runCtx, cancelRun := context.WithCancel(context.Background())
-	runDone := runPool(t, pool, runCtx)
+	synctest.Test(t, func(t *testing.T) {
+		checker := &notifyingImmediateChecker{
+			calls: make(chan string, 2),
+		}
+		pool := newTestWorkerPool(t, checker, 1, 2)
+		runCtx, cancelRun := context.WithCancel(context.Background())
+		runDone := runPool(t, pool, runCtx)
+		defer func() {
+			cancelRun()
+			waitClosed(t, runDone, "worker pool run")
+		}()
 
-	if err := pool.Submit(context.Background(), poolService("first")); err != nil {
-		t.Fatalf("Submit(first) error = %v", err)
-	}
-	if got := waitString(t, checker.calls, "first check"); got != "first" {
-		t.Fatalf("first check = %q, want first", got)
-	}
+		if err := pool.Submit(context.Background(), poolService("first")); err != nil {
+			t.Fatalf("Submit(first) error = %v", err)
+		}
+		if got := waitString(t, checker.calls, "first check"); got != "first" {
+			t.Fatalf("first check = %q, want first", got)
+		}
 
-	if err := pool.Submit(context.Background(), poolService("second")); err != nil {
-		t.Fatalf("Submit(second) error = %v", err)
-	}
-	if got := waitString(t, checker.calls, "second check"); got != "second" {
-		t.Fatalf("second check = %q, want second", got)
-	}
+		if err := pool.Submit(context.Background(), poolService("second")); err != nil {
+			t.Fatalf("Submit(second) error = %v", err)
+		}
+		if got := waitString(t, checker.calls, "second check"); got != "second" {
+			t.Fatalf("second check = %q, want second", got)
+		}
 
-	cancelRun()
-	waitClosed(t, runDone, "worker pool run")
+		// Let the second check return and block sending to the full result buffer.
+		synctest.Wait()
+		if got := len(pool.results); got != cap(pool.results) {
+			t.Fatalf("buffered results = %d, want full buffer of %d", got, cap(pool.results))
+		}
+
+		cancelRun()
+		waitClosed(t, runDone, "worker pool run")
+		if got := receiveResult(t, pool.Results()).ServiceID; got != "first" {
+			t.Fatalf("buffered result = %q, want first", got)
+		}
+		drainClosedResults(t, pool.Results())
+	})
 }
 
 func newTestWorkerPool(t *testing.T, checker Checker, workerCount int, queueCapacity int) *WorkerPool {

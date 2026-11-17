@@ -218,6 +218,63 @@ func TestCheckContextCancellation(t *testing.T) {
 	}
 }
 
+func TestCheckInFlightContextCancellation(t *testing.T) {
+	const waitTimeout = 5 * time.Second
+	requestStarted := make(chan struct{})
+	serverCanceled := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(requestStarted)
+		<-r.Context().Done()
+		close(serverCanceled)
+	}))
+	ctx, cancel := context.WithCancel(context.Background())
+	checker := NewHTTPCheckerWithClient(server.Client(), DefaultRequestTimeout)
+	results := make(chan CheckResult, 1)
+	checkDone := make(chan struct{})
+	t.Cleanup(func() {
+		cancel()
+		server.CloseClientConnections()
+		server.Close()
+		select {
+		case <-checkDone:
+		case <-time.After(waitTimeout):
+			t.Error("HTTP check did not terminate during cleanup")
+		}
+	})
+	go func() {
+		defer close(checkDone)
+		results <- checker.Check(ctx, testService(server.URL))
+	}()
+
+	select {
+	case <-requestStarted:
+	case <-time.After(waitTimeout):
+		t.Fatal("server did not receive the HTTP check")
+	}
+	cancel()
+
+	select {
+	case result := <-results:
+		if result.StatusCode != 0 {
+			t.Fatalf("StatusCode = %d, want 0", result.StatusCode)
+		}
+		if result.ErrorKind != ErrorCanceled {
+			t.Fatalf("ErrorKind = %q, want %q", result.ErrorKind, ErrorCanceled)
+		}
+		if result.ErrorMessage == "" {
+			t.Fatal("ErrorMessage is empty, want underlying cancellation error")
+		}
+	case <-time.After(waitTimeout):
+		t.Fatal("HTTP check did not return after caller cancellation")
+	}
+
+	select {
+	case <-serverCanceled:
+	case <-time.After(waitTimeout):
+		t.Fatal("server did not observe request cancellation")
+	}
+}
+
 func TestCheckCallerContextDeadlineExceeded(t *testing.T) {
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Nanosecond))
 	defer cancel()

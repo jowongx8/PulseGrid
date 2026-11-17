@@ -13,7 +13,8 @@ import (
 )
 
 const (
-	sseHeartbeatInterval = 30 * time.Second
+	sseHeartbeatInterval = 15 * time.Second
+	sseWriteTimeout      = 5 * time.Second
 	heartbeatFrame       = ": keep-alive\n\n"
 )
 
@@ -25,12 +26,6 @@ type statusChangedEventResponse struct {
 	ServiceID     string    `json:"serviceId"`
 	State         string    `json:"state"`
 	LastCheckedAt time.Time `json:"lastCheckedAt"`
-}
-
-type incidentEventResponse struct {
-	ServiceID  string     `json:"serviceId"`
-	StartedAt  time.Time  `json:"startedAt"`
-	ResolvedAt *time.Time `json:"resolvedAt"`
 }
 
 func eventStreamHandler(subscriber EventSubscriber) http.HandlerFunc {
@@ -110,14 +105,14 @@ func marshalEventFrame(value event.Event) ([]byte, error) {
 		}
 	case event.IncidentOpened:
 		name = "incident.opened"
-		payload = incidentEventResponse{
+		payload = incidentResponse{
 			ServiceID: value.ServiceID,
 			StartedAt: value.StartedAt,
 		}
 	case event.IncidentResolved:
 		name = "incident.resolved"
 		resolvedAt := value.ResolvedAt
-		payload = incidentEventResponse{
+		payload = incidentResponse{
 			ServiceID:  value.ServiceID,
 			StartedAt:  value.StartedAt,
 			ResolvedAt: &resolvedAt,
@@ -134,17 +129,16 @@ func marshalEventFrame(value event.Event) ([]byte, error) {
 	var frame bytes.Buffer
 	frame.WriteString("event: ")
 	frame.WriteString(name)
-	frame.WriteByte('\n')
-	for _, line := range bytes.Split(data, []byte{'\n'}) {
-		frame.WriteString("data: ")
-		frame.Write(line)
-		frame.WriteByte('\n')
-	}
-	frame.WriteByte('\n')
+	frame.WriteString("\ndata: ")
+	frame.Write(data)
+	frame.WriteString("\n\n")
 	return frame.Bytes(), nil
 }
 
 func writeAndFlush(w http.ResponseWriter, controller *http.ResponseController, body []byte) error {
+	if err := controller.SetWriteDeadline(time.Now().Add(sseWriteTimeout)); err != nil {
+		return err
+	}
 	written, err := w.Write(body)
 	if err != nil {
 		return err
@@ -152,5 +146,9 @@ func writeAndFlush(w http.ResponseWriter, controller *http.ResponseController, b
 	if written != len(body) {
 		return io.ErrShortWrite
 	}
-	return controller.Flush()
+	if err := controller.Flush(); err != nil {
+		return err
+	}
+	// Idle streams wait longer than the write timeout between heartbeats.
+	return controller.SetWriteDeadline(time.Time{})
 }

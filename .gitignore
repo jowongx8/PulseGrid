@@ -31,3 +31,23 @@ coverage/
 
 # npm logs
 npm-debug.log*
+
+# Example configuration files
+*.example
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+backend.hcl
+*.tfplan
+/infra/production/*.plan.log
+
+# Populated production runtime configuration stays outside the repository.
+/infra/runtime/runtime.env
+/infra/runtime/origin-auth.caddy
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]

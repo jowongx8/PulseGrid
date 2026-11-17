@@ -11,9 +11,12 @@ export default defineConfig({
     },
   },
   server: {
+    watch: {
+      usePolling: process.env.DEV_USE_POLLING === 'true',
+    },
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:8080',
+        target: process.env.DEV_API_PROXY_TARGET ?? 'http://127.0.0.1:8080',
         changeOrigin: true,
         configure(proxy) {
           proxy.on('proxyRes', (response, _request, downstream) => {

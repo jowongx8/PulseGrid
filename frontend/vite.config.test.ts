@@ -1,10 +1,34 @@
 // @vitest-environment node
 import { createServer as createHTTPServer } from 'node:http'
 import { createServer as createViteServer } from 'vite'
-import { expect, it } from 'vitest'
-import config from './vite.config.ts'
+import { expect, it, vi } from 'vitest'
 
-it('forwards SSE headers before any body data while preserving ordinary REST responses', async () => {
+async function loadConfig(target?: string, polling?: string) {
+  vi.stubEnv('DEV_API_PROXY_TARGET', target)
+  vi.stubEnv('DEV_USE_POLLING', polling)
+  vi.resetModules()
+  try {
+    return (await import('./vite.config.ts')).default
+  } finally {
+    vi.unstubAllEnvs()
+  }
+}
+
+it('keeps the native proxy target and disables polling by default', async () => {
+  const config = await loadConfig()
+  const proxy = config.server?.proxy?.['/api']
+  expect(proxy).toMatchObject({ target: 'http://127.0.0.1:8080', changeOrigin: true })
+  expect(config.server?.watch?.usePolling).toBe(false)
+})
+
+it('supports Compose service DNS and opt-in polling', async () => {
+  const config = await loadConfig('http://backend:8080', 'true')
+  expect(config.server?.proxy?.['/api']).toMatchObject({ target: 'http://backend:8080', changeOrigin: true })
+  expect(config.server?.watch?.usePolling).toBe(true)
+})
+
+it.each([undefined, 'http://backend:8080'])('forwards SSE headers and REST responses with proxy target %s', async (target) => {
+  const config = await loadConfig(target)
   const upstream = createHTTPServer((request, response) => {
     if (request.url === '/api/v1/events') {
       response.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' })
@@ -23,7 +47,7 @@ it('forwards SSE headers before any body data while preserving ordinary REST res
     if (!address || typeof address === 'string') throw new Error('Missing upstream address')
     const proxy = config.server?.proxy?.['/api']
     if (!proxy || typeof proxy === 'string') throw new Error('Missing API proxy configuration')
-    expect(proxy.target).toBe('http://127.0.0.1:8080')
+    expect(proxy.target).toBe(target ?? 'http://127.0.0.1:8080')
     expect(proxy.timeout).toBeUndefined()
     expect(proxy.proxyTimeout).toBeUndefined()
     vite = await createViteServer({
