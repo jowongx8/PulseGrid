@@ -75,6 +75,27 @@ resource "aws_iam_role_policy" "github_deployment" {
         ]
         Resource = aws_cloudfront_distribution.production.arn
       },
+      {
+        Sid    = "DeployBackendThroughControlledDocument"
+        Effect = "Allow"
+        Action = "ssm:SendCommand"
+        Resource = [
+          # The name is known during planning; its reference retains the dependency.
+          "arn:aws:ssm:ap-southeast-2:${var.expected_aws_account_id}:document/${aws_ssm_document.backend_deploy.name}",
+          aws_instance.backend.arn,
+        ]
+      },
+      {
+        Sid      = "ReadDeploymentResult"
+        Effect   = "Allow"
+        Action   = "ssm:GetCommandInvocation"
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "aws:RequestedRegion" = "ap-southeast-2"
+          }
+        }
+      },
     ]
   })
 }

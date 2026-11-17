@@ -1,0 +1,32 @@
+[Unit]
+Description=PulseGrid backend with verified persistent storage
+BindsTo=docker.service var-lib-pulsegrid.mount
+PartOf=docker.service
+After=docker.service var-lib-pulsegrid.mount network-online.target
+Wants=network-online.target
+RequiresMountsFor=/var/lib/pulsegrid
+StartLimitIntervalSec=15min
+StartLimitBurst=3
+
+[Service]
+Type=exec
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+EnvironmentFile=/etc/pulsegrid/runtime.env
+EnvironmentFile=-/var/lib/pulsegrid-runtime/selected.env
+WorkingDirectory=/opt/pulsegrid
+ExecCondition=/usr/bin/timeout 20s /usr/local/libexec/pulsegrid/check-backend-start.sh
+ExecStart=/usr/bin/docker compose --env-file /dev/null --project-name pulsegrid-production --file /opt/pulsegrid/compose.yaml up --no-deps --no-build --pull never --force-recreate --exit-code-from backend backend
+ExecStartPost=/usr/local/libexec/pulsegrid/verify-backend.sh
+ExecStop=-/usr/bin/docker stop --time 20 pulsegrid-production-backend
+ExecStopPost=-/usr/bin/docker stop --time 20 pulsegrid-production-backend
+Restart=always
+RestartSec=5s
+TimeoutStartSec=150s
+TimeoutStopSec=45s
+UMask=0077
+# Container output is retained by Docker's bounded local log driver.
+StandardOutput=null
+StandardError=journal
+
+[Install]
+WantedBy=docker.service

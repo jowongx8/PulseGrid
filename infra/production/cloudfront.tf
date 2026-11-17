@@ -35,6 +35,11 @@ resource "aws_cloudfront_distribution" "production" {
     domain_name = var.backend_origin_hostname
     origin_id   = "backend"
 
+    custom_header {
+      name  = "X-PulseGrid-Origin-Verify"
+      value = var.backend_origin_secret
+    }
+
     # Omit response_completion_timeout so SSE has no configured total-duration cap.
     custom_origin_config {
       http_port              = 80

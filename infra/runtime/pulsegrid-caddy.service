@@ -1,0 +1,31 @@
+[Unit]
+Description=PulseGrid Caddy HTTPS proxy
+BindsTo=docker.service
+PartOf=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=15min
+StartLimitBurst=3
+
+[Service]
+Type=exec
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+EnvironmentFile=/etc/pulsegrid/runtime.env
+EnvironmentFile=/var/lib/pulsegrid-runtime/selected.env
+WorkingDirectory=/opt/pulsegrid
+ExecCondition=/usr/local/libexec/pulsegrid/check-backend-start.sh --caddy-auth
+ExecStart=/usr/bin/docker compose --env-file /dev/null --project-name pulsegrid-production --file /opt/pulsegrid/compose.yaml up --no-deps --no-build --pull never --force-recreate --exit-code-from caddy caddy
+ExecReload=/usr/local/libexec/pulsegrid/check-backend-start.sh --caddy-auth
+ExecReload=/usr/bin/docker exec pulsegrid-production-caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+ExecStop=-/usr/bin/docker stop --time 20 pulsegrid-production-caddy
+ExecStopPost=-/usr/bin/docker stop --time 20 pulsegrid-production-caddy
+Restart=always
+RestartSec=5s
+TimeoutStartSec=150s
+TimeoutStopSec=45s
+UMask=0077
+StandardOutput=null
+StandardError=journal
+
+[Install]
+WantedBy=docker.service

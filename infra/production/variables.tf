@@ -17,3 +17,14 @@ variable "backend_origin_hostname" {
     error_message = "backend_origin_hostname must be a bare lowercase hostname such as <registered-name>.duckdns.org, with a valid 1-63 character DNS label."
   }
 }
+
+variable "backend_origin_secret" {
+  description = "Private CloudFront-to-Caddy origin header value, supplied through ignored local configuration."
+  type        = string
+  sensitive   = true
+
+  validation {
+    condition     = can(regex("^[0-9a-f]{64}$", var.backend_origin_secret))
+    error_message = "backend_origin_secret must contain exactly 64 lowercase hexadecimal characters."
+  }
+}

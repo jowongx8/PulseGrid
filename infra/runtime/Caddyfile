@@ -1,0 +1,33 @@
+{
+	admin 127.0.0.1:2019
+	persist_config off
+	servers {
+		protocols h1 h2
+	}
+}
+
+pulsegrid-api.duckdns.org {
+	tls {
+		issuer acme {
+			disable_tlsalpn_challenge
+		}
+	}
+
+	# Install the private matcher only after Package B injects the origin header.
+	import origin-auth.caddy
+
+	handle @approved_api {
+		# Strip from the original request as well as the upstream copy so proxy
+		# error logs cannot include the authenticated origin header.
+		request_header -X-PulseGrid-Origin-Verify
+		reverse_proxy backend:8080
+	}
+
+	handle /api/* {
+		respond "Forbidden" 403
+	}
+
+	handle {
+		respond "Not Found" 404
+	}
+}
