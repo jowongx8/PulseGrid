@@ -59,6 +59,7 @@ jobs:
             backend:
               - 'backend/**'
               - '.github/workflows/backend-ci.yml'
+              - '.github/workflows/backend-deploy.yml'
               - '.github/workflows/pr-ci.yml'
               - '.github/scripts/**'
               - '.github/actionlint.yaml'
@@ -105,6 +106,7 @@ jobs:
             bash -n "$script"
           done
           python3 -m unittest discover -s infra/runtime -p '*_test.py'
+          python3 -m unittest discover -s .github/scripts -p '*_test.py'
           bash .github/scripts/check-workflows.sh
 
   gate:
