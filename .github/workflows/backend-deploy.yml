@@ -1,0 +1,327 @@
+name: Backend deployment
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'backend/**'
+      - '.github/workflows/backend-ci.yml'
+      - '.github/workflows/backend-deploy.yml'
+      - '.github/workflows/pr-ci.yml'
+      - '.github/scripts/backend_deploy_test.py'
+      - '.github/scripts/check-workflows.sh'
+      - '.github/actionlint.yaml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    uses: ./.github/workflows/backend-ci.yml
+
+  deploy:
+    needs: validate
+    if: >-
+      github.ref == 'refs/heads/main' && needs.validate.result == 'success' &&
+      needs.validate.outputs.validation_result == 'success'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 45
+    environment:
+      name: production
+      url: https://d248st025veyuf.cloudfront.net/api/v1/status
+    concurrency:
+      group: pulsegrid-production-backend
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: bash
+    env:
+      AWS_MAX_ATTEMPTS: '3'
+      AWS_PAGER: ''
+      ECR_REGISTRY: 852000185801.dkr.ecr.ap-southeast-2.amazonaws.com
+      ECR_REPOSITORY: pulsegrid-production-backend
+      SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}
+    steps:
+      # Read environment-level variables after entering the protected job.
+      - name: Evaluate backend deployment switch
+        id: switch
+        env:
+          BACKEND_DEPLOY_ENABLED: ${{ vars.BACKEND_DEPLOY_ENABLED }}
+        run: |
+          if [[ "$BACKEND_DEPLOY_ENABLED" == 'true' ]]; then
+            echo 'enabled=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'enabled=false' >> "$GITHUB_OUTPUT"
+            echo 'Backend deployment disabled; no AWS authentication, image publication or SSM submission performed.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Check out exact validated commit
+        if: steps.switch.outputs.enabled == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Validate production configuration
+        id: configuration
+        if: steps.switch.outputs.enabled == 'true'
+        env:
+          AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          BACKEND_INSTANCE_ID: ${{ vars.BACKEND_INSTANCE_ID }}
+          BACKEND_SSM_DOCUMENT_VERSION: ${{ vars.BACKEND_SSM_DOCUMENT_VERSION }}
+        run: |
+          if [[ "$AWS_ACCOUNT_ID" != '852000185801' || "$AWS_REGION" != 'ap-southeast-2' ||
+                "$AWS_DEPLOY_ROLE_ARN" != 'arn:aws:iam::852000185801:role/pulsegrid-production-deployment' ||
+                ! "$BACKEND_INSTANCE_ID" =~ ^i-[0-9a-f]{17}$ ||
+                ! "$BACKEND_SSM_DOCUMENT_VERSION" =~ ^[1-9][0-9]*$ ]]; then
+            echo '::error::Invalid production account, region, role, instance ID or numeric SSM document version.'
+            exit 1
+          fi
+
+      - name: Assume restricted production deployment role
+        if: steps.switch.outputs.enabled == 'true'
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          allowed-account-ids: '852000185801'
+          role-skip-session-tagging: true
+          role-duration-seconds: 3600
+          role-session-name: pulsegrid-${{ github.run_id }}-${{ github.run_attempt }}
+          force-skip-oidc: true
+          unset-current-credentials: true
+          translate-env-variables: false
+          action-timeout-s: 120
+
+      - name: Verify assumed role, account and region
+        id: identity
+        if: steps.switch.outputs.enabled == 'true'
+        run: |
+          if [[ "$AWS_REGION" != 'ap-southeast-2' || "$AWS_DEFAULT_REGION" != 'ap-southeast-2' ]]; then
+            echo '::error::Unexpected AWS region after authentication.'
+            exit 1
+          fi
+          identity=$(aws sts get-caller-identity --query '[Account,Arn]' --output text \
+            --cli-connect-timeout 10 --cli-read-timeout 30)
+          read -r account arn <<< "$identity"
+          if [[ "$account" != '852000185801' ||
+                "$arn" != "arn:aws:sts::852000185801:assumed-role/pulsegrid-production-deployment/pulsegrid-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" ]]; then
+            echo '::error::Unexpected AWS deployment identity.'
+            exit 1
+          fi
+
+      - name: Fetch current main before image publication
+        if: steps.switch.outputs.enabled == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          path: .backend-main-early
+          persist-credentials: false
+
+      - name: Check early freshness
+        id: early
+        if: steps.switch.outputs.enabled == 'true'
+        run: |
+          current_main=$(git -C .backend-main-early rev-parse HEAD)
+          if [[ "$current_main" == "$GITHUB_SHA" ]]; then
+            echo 'eligible=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'eligible=false' >> "$GITHUB_OUTPUT"
+            echo "::notice::Stale backend candidate $GITHUB_SHA; current main $current_main. Image publication and SSM submission skipped."
+            echo "Stale backend candidate $GITHUB_SHA skipped before image publication. Dispatch current main after the active deployment finishes; automatic catch-up is not guaranteed." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Look up immutable SHA tag
+        id: lookup
+        if: steps.switch.outputs.enabled == 'true' && steps.early.outputs.eligible == 'true'
+        run: |
+          if digest=$(aws ecr describe-images --repository-name "$ECR_REPOSITORY" \
+              --image-ids "imageTag=sha-$GITHUB_SHA" --query 'imageDetails[0].imageDigest' --output text \
+              --cli-connect-timeout 10 --cli-read-timeout 30 2> "$RUNNER_TEMP/ecr-lookup-error"); then
+            if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo '::error::ECR returned an invalid image digest.'
+              exit 1
+            fi
+            echo 'exists=true' >> "$GITHUB_OUTPUT"
+            echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          elif grep -q 'An error occurred (ImageNotFoundException)' "$RUNNER_TEMP/ecr-lookup-error"; then
+            echo 'exists=false' >> "$GITHUB_OUTPUT"
+          else
+            echo '::error::ECR lookup failed; this is not an absent image.'
+            cat "$RUNNER_TEMP/ecr-lookup-error" >&2
+            exit 1
+          fi
+
+      - name: Log in to the existing ECR registry
+        if: steps.switch.outputs.enabled == 'true' && steps.early.outputs.eligible == 'true'
+        run: |
+          aws ecr get-login-password --cli-connect-timeout 10 --cli-read-timeout 30 |
+            docker login --username AWS --password-stdin "$ECR_REGISTRY"
+
+      - name: Set up Docker Buildx
+        if: steps.switch.outputs.enabled == 'true' && steps.early.outputs.eligible == 'true' && steps.lookup.outputs.exists == 'false'
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build and publish immutable ARM64 image
+        id: build
+        if: steps.switch.outputs.enabled == 'true' && steps.early.outputs.eligible == 'true' && steps.lookup.outputs.exists == 'false'
+        timeout-minutes: 15
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ./backend
+          platforms: linux/arm64
+          push: true
+          tags: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ env.SOURCE_URL }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          provenance: mode=min
+          sbom: true
+
+      - name: Resolve and verify deployable image identity
+        id: image
+        if: steps.switch.outputs.enabled == 'true' && steps.early.outputs.eligible == 'true'
+        timeout-minutes: 5
+        env:
+          IMAGE_EXISTED: ${{ steps.lookup.outputs.exists }}
+          EXISTING_DIGEST: ${{ steps.lookup.outputs.digest }}
+          PUSHED_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          digest=$(aws ecr describe-images --repository-name "$ECR_REPOSITORY" \
+            --image-ids "imageTag=sha-$GITHUB_SHA" --query 'imageDetails[0].imageDigest' --output text \
+            --cli-connect-timeout 10 --cli-read-timeout 30)
+          expected=$PUSHED_DIGEST
+          if [[ "$IMAGE_EXISTED" == 'true' ]]; then expected=$EXISTING_DIGEST; fi
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ || "$digest" != "$expected" ]]; then
+            echo '::error::ECR digest does not match the selected existing image or newly pushed image.'
+            exit 1
+          fi
+          image="$ECR_REGISTRY/$ECR_REPOSITORY@$digest"
+          docker pull --platform linux/arm64 "$image"
+          identity=$(docker image inspect --format \
+            '{{.Os}} {{.Architecture}} {{index .Config.Labels "org.opencontainers.image.source"}} {{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")
+          if [[ "$identity" != "linux arm64 $SOURCE_URL $GITHUB_SHA" ]]; then
+            echo '::error::Unexpected image identity, architecture or immutable tag collision.'
+            exit 1
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "Verified backend image: $image (reused=$IMAGE_EXISTED)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fetch current main immediately before SSM submission
+        if: steps.switch.outputs.enabled == 'true' && steps.early.outputs.eligible == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          path: .backend-main-final
+          persist-credentials: false
+
+      - name: Check final freshness
+        id: final
+        if: steps.switch.outputs.enabled == 'true' && steps.early.outputs.eligible == 'true'
+        run: |
+          current_main=$(git -C .backend-main-final rev-parse HEAD)
+          if [[ "$current_main" == "$GITHUB_SHA" ]]; then
+            echo 'eligible=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'eligible=false' >> "$GITHUB_OUTPUT"
+            echo "::notice::Stale backend candidate $GITHUB_SHA; current main $current_main. SSM submission skipped."
+            echo "Backend image retained, but candidate $GITHUB_SHA is stale; no SSM submission. Dispatch current main after reconciliation; automatic catch-up is not guaranteed." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Submit restricted SSM deployment once
+        id: submit
+        if: steps.switch.outputs.enabled == 'true' && steps.early.outputs.eligible == 'true' && steps.final.outputs.eligible == 'true'
+        timeout-minutes: 2
+        env:
+          BACKEND_INSTANCE_ID: ${{ vars.BACKEND_INSTANCE_ID }}
+          BACKEND_SSM_DOCUMENT_VERSION: ${{ vars.BACKEND_SSM_DOCUMENT_VERSION }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          comment="pulsegrid:$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT:$GITHUB_SHA"
+          echo "SSM submission: $comment; image $IMAGE_DIGEST; instance $BACKEND_INSTANCE_ID" >> "$GITHUB_STEP_SUMMARY"
+          # A lost response is ambiguous: never retry this non-idempotent request.
+          if ! command_id=$(AWS_MAX_ATTEMPTS=1 aws ssm send-command \
+              --document-name pulsegrid-production-deploy-backend \
+              --document-version "$BACKEND_SSM_DOCUMENT_VERSION" --instance-ids "$BACKEND_INSTANCE_ID" \
+              --parameters "ImageDigest=$IMAGE_DIGEST" --comment "$comment" --timeout-seconds 60 \
+              --query 'Command.CommandId' --output text --cli-connect-timeout 10 --cli-read-timeout 30); then
+            echo '::error::SSM submission failed or is uncertain. Do not retry before operator reconciliation; a remote command may still execute.'
+            exit 1
+          fi
+          if [[ ! "$command_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+            echo '::error::SSM returned no valid command ID; operator reconciliation is required.'
+            exit 1
+          fi
+          echo "command_id=$command_id" >> "$GITHUB_OUTPUT"
+          echo "SSM command: $command_id; selected image: $IMAGE_DIGEST" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Wait for exact SSM deployment result
+        id: poll
+        if: steps.switch.outputs.enabled == 'true' && steps.early.outputs.eligible == 'true' && steps.final.outputs.eligible == 'true'
+        env:
+          COMMAND_ID: ${{ steps.submit.outputs.command_id }}
+          BACKEND_INSTANCE_ID: ${{ vars.BACKEND_INSTANCE_ID }}
+        run: |
+          # Delivery timeout (60s), document execution timeout (900s) and this
+          # client polling deadline (1500s) are different limits.
+          deadline=$((SECONDS + 1500))
+          consistency_deadline=$((SECONDS + 60))
+          while (( SECONDS < deadline )); do
+            remaining=$((deadline - SECONDS))
+            if (( remaining <= 0 )); then break; fi
+            if AWS_MAX_ATTEMPTS=1 timeout "${remaining}s" aws ssm get-command-invocation \
+                --command-id "$COMMAND_ID" --instance-id "$BACKEND_INSTANCE_ID" --plugin-name deployBackend \
+                --output json --cli-connect-timeout 10 --cli-read-timeout 30 \
+                > "$RUNNER_TEMP/ssm-result.json" 2> "$RUNNER_TEMP/ssm-poll-error"; then
+              status=$(jq -er '.Status' "$RUNNER_TEMP/ssm-result.json")
+              case "$status" in
+                Success)
+                  if ! jq -e '.ResponseCode == 0' "$RUNNER_TEMP/ssm-result.json" > /dev/null; then
+                    echo '::error::SSM returned Success with a nonzero or missing response code.'
+                    exit 1
+                  fi
+                  echo "SSM command $COMMAND_ID succeeded; host startup verification completed." >> "$GITHUB_STEP_SUMMARY"
+                  exit 0
+                  ;;
+                Pending|InProgress|Delayed) ;;
+                *)
+                  echo "::error::SSM command $COMMAND_ID ended with status $status; reconcile remote state before another deployment."
+                  exit 1
+                  ;;
+              esac
+            elif (( SECONDS < consistency_deadline )) && grep -q 'An error occurred (InvocationDoesNotExist)' "$RUNNER_TEMP/ssm-poll-error"; then
+              : # Briefly allow initial eventual consistency.
+            else
+              echo "::error::Cannot determine SSM command $COMMAND_ID outcome; remote execution may continue. Operator reconciliation required."
+              exit 1
+            fi
+            remaining=$((deadline - SECONDS))
+            if (( remaining > 5 )); then remaining=5; fi
+            if (( remaining > 0 )); then sleep "$remaining"; fi
+          done
+          echo "::error::SSM polling deadline exceeded for $COMMAND_ID; remote execution may continue. Operator reconciliation required."
+          exit 1
+
+      - name: Verify public backend API
+        id: smoke
+        if: steps.switch.outputs.enabled == 'true' && steps.early.outputs.eligible == 'true' && steps.final.outputs.eligible == 'true'
+        run: |
+          status=$(curl --fail --silent --show-error --connect-timeout 5 --max-time 30 \
+            --retry 2 --retry-max-time 60 --output "$RUNNER_TEMP/backend-status.json" --write-out '%{http_code}' \
+            https://d248st025veyuf.cloudfront.net/api/v1/status)
+          test "$status" = '200'
+          jq -e '
+            (.services | type == "array" and length > 0) and
+            all(.services[];
+              (.id | type == "string" and length > 0) and
+              (.status.state == "UP" or .status.state == "DOWN" or .status.state == "UNKNOWN"))
+          ' "$RUNNER_TEMP/backend-status.json" > /dev/null
+          echo "Backend $GITHUB_SHA deployed and public status API verified." >> "$GITHUB_STEP_SUMMARY"
